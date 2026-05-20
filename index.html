@@ -1,3 +1,4 @@
+```html:SquadApp Supabase:index.html
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -44,70 +45,45 @@
     <script type="text/babel">
         const { useState, useEffect, useCallback } = React;
 
-        // --- ASSISTANCE URL PARAMETERS (Bulletproof fallback) ---
-        const getQueryParam = (name) => {
-            const urlParams = new URLSearchParams(window.location.search);
-            return urlParams.get(name);
-        };
-
+        // --- CONFIGURATION SUPABASE ---
+        // Tu peux modifier ces valeurs directement ici OU les configurer directement dans l'application sur ton écran !
         const DEFAULT_SUPABASE_URL = ""; 
         const DEFAULT_SUPABASE_KEY = "";
 
-        // --- COMPRESSION D'IMAGE ---
-        const compressImage = (base64Str) => {
+        // --- FONCTION DE COMPRESSION D'IMAGE (Pour éviter de saturer la base de données) ---
+        const compressImage = (base64Str, maxSize = 1080) => {
             return new Promise((resolve) => {
                 const img = new Image();
                 img.src = base64Str;
                 img.onload = () => {
                     const canvas = document.createElement('canvas');
-                    const MAX_WIDTH = 500;
-                    const MAX_HEIGHT = 500;
                     let width = img.width;
                     let height = img.height;
 
                     if (width > height) {
-                        if (width > MAX_WIDTH) {
-                            height *= MAX_WIDTH / width;
-                            width = MAX_WIDTH;
+                        if (width > maxSize) {
+                            height *= maxSize / width;
+                            width = maxSize;
                         }
                     } else {
-                        if (height > MAX_HEIGHT) {
-                            width *= MAX_HEIGHT / height;
-                            height = MAX_HEIGHT;
+                        if (height > maxSize) {
+                            width *= maxSize / height;
+                            height = maxSize;
                         }
                     }
                     canvas.width = width;
                     canvas.height = height;
                     const ctx = canvas.getContext('2d');
                     ctx.drawImage(img, 0, 0, width, height);
-                    resolve(canvas.toDataURL('image/jpeg', 0.6));
+                    resolve(canvas.toDataURL('image/jpeg', 0.8));
                 };
             });
         };
 
         function App() {
-            // Lecture sécurisée de la mémoire locale avec try-catch pour parer les restrictions des navigateurs
-            const safeGetLocalStorage = (key, fallback) => {
-                try {
-                    return localStorage.getItem(key) || fallback;
-                } catch (e) {
-                    console.warn("Le stockage local est bloqué par votre navigateur.");
-                    return fallback;
-                }
-            };
-
-            const safeSetLocalStorage = (key, value) => {
-                try {
-                    localStorage.setItem(key, value);
-                    return true;
-                } catch (e) {
-                    return false;
-                }
-            };
-
-            // Récupération depuis URL ou localStorage
-            const [sbUrl, setSbUrl] = useState(() => getQueryParam('sb_url') || safeGetLocalStorage('squad_sb_url', DEFAULT_SUPABASE_URL));
-            const [sbKey, setSbKey] = useState(() => getQueryParam('sb_key') || safeGetLocalStorage('squad_sb_key', DEFAULT_SUPABASE_KEY));
+            // Configuration Supabase dynamique
+            const [sbUrl, setSbUrl] = useState(() => localStorage.getItem('squad_sb_url') || DEFAULT_SUPABASE_URL);
+            const [sbKey, setSbKey] = useState(() => localStorage.getItem('squad_sb_key') || DEFAULT_SUPABASE_KEY);
             const [supabaseClient, setSupabaseClient] = useState(null);
 
             // Données de l'appli
@@ -116,24 +92,16 @@
             const [challenges, setChallenges] = useState([]);
             const [submissions, setSubmissions] = useState([]);
             
-            const [currentUser, setCurrentUser] = useState(() => {
-                try {
-                    const saved = localStorage.getItem('squad_current_user');
-                    return saved ? JSON.parse(saved) : null;
-                } catch(e) {
-                    return null;
-                }
-            });
-            const [currentGroup, setCurrentGroup] = useState(() => safeGetLocalStorage('squad_active_group_id', ""));
+            const [currentUser, setCurrentUser] = useState(() => JSON.parse(localStorage.getItem('squad_current_user')) || null);
+            const [currentGroup, setCurrentGroup] = useState(() => localStorage.getItem('squad_active_group_id') || "");
             
-            // États UI
+            // UI
             const [activeTab, setActiveTab] = useState("feed");
             const [showJoinModal, setShowJoinModal] = useState(false);
-            const [showCreateModal, setShowCreateModal] = useState(false);
             const [showAddChallengeModal, setShowAddChallengeModal] = useState(false);
-            const [showDbSetup, setShowDbSetup] = useState(!sbUrl || !sbKey);
+            const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
+            const [showDbSetup, setShowDbSetup] = useState(false);
             const [isLoading, setIsLoading] = useState(false);
-            const [connectionTestStatus, setConnectionTestStatus] = useState({ tested: false, success: false, message: "" });
 
             // Formulaires
             const [joinName, setJoinName] = useState("");
@@ -145,8 +113,24 @@
             const [regTimezone, setRegTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone);
             const [newChallengeTitle, setNewChallengeTitle] = useState("");
             const [newChallengeDesc, setNewChallengeDesc] = useState("");
+            const [profilePhotoUrl, setProfilePhotoUrl] = useState("");
+            const [editName, setEditName] = useState("");
+            const [editCity, setEditCity] = useState("");
+            const [editTimezone, setEditTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone);
+            const [editAvatarFile, setEditAvatarFile] = useState(null);
+            const [showEditProfileModal, setShowEditProfileModal] = useState(false);
+            const [expandedChallengeId, setExpandedChallengeId] = useState(null);
 
             const [timeTick, setTimeTick] = useState(new Date());
+
+            useEffect(() => {
+                if (currentUser) {
+                    setEditName(currentUser.name || "");
+                    setEditCity(currentUser.city || "");
+                    setEditTimezone(currentUser.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone);
+                    setProfilePhotoUrl(currentUser.avatar_url || currentUser.photo_url || "");
+                }
+            }, [currentUser]);
 
             // Initialiser le client Supabase
             useEffect(() => {
@@ -154,11 +138,8 @@
                     try {
                         const client = supabase.createClient(sbUrl, sbKey);
                         setSupabaseClient(client);
-                        // Tenter de sauvegarder localement
-                        safeSetLocalStorage('squad_sb_url', sbUrl);
-                        safeSetLocalStorage('squad_sb_key', sbKey);
                     } catch (e) {
-                        console.error("Erreur d'initialisation Supabase:", e);
+                        console.error("Erreur de connexion Supabase:", e);
                     }
                 }
             }, [sbUrl, sbKey]);
@@ -182,68 +163,84 @@
                 }
             };
 
-            // --- CHARGER TOUTES LES DONNÉES DEPUIS SUPABASE (AVEC GESTION DES ERREURS PROPRES) ---
+            const getChallengeExpiry = (challenge) => {
+                if (challenge.expires_at) {
+                    return new Date(challenge.expires_at);
+                }
+                const createdAt = challenge.created_at ? new Date(challenge.created_at) : new Date();
+                const expiry = new Date(createdAt);
+                expiry.setDate(expiry.getDate() + 7);
+                return expiry;
+            };
+
+            const getChallengeRemaining = (challenge) => {
+                const diff = getChallengeExpiry(challenge) - new Date();
+                if (diff <= 0) return "Expiré";
+                const days = Math.floor(diff / 86400000);
+                const hours = Math.floor((diff % 86400000) / 3600000);
+                const minutes = Math.floor((diff % 3600000) / 60000);
+                return `${days}j ${hours}h ${minutes}m`;
+            };
+
+            const isChallengeExpired = (challenge) => {
+                const expiry = getChallengeExpiry(challenge);
+                return expiry.getTime() <= Date.now();
+            };
+
+            const getChallengeRealityStatus = (challenge) => {
+                if (isChallengeExpired(challenge)) return 'expired';
+                return challenge.status || 'active';
+            };
+
+            // --- CHARGER TOUTES LES DONNÉES DEPUIS SUPABASE ---
             const loadData = useCallback(async () => {
                 if (!supabaseClient) return;
                 setIsLoading(true);
                 try {
                     // 1. Charger les groupes
-                    const { data: grps, error: grpsErr } = await supabaseClient
-                        .from('groups')
-                        .select('*');
-                    
-                    if (grpsErr) throw grpsErr;
+                    const { data: grps } = await supabaseClient.from('groups').select('*');
                     setGroups(grps || []);
 
                     if (grps && grps.length > 0) {
                         const activeId = currentGroup || grps[0].id;
                         if (!currentGroup) {
                             setCurrentGroup(activeId);
-                            safeSetLocalStorage('squad_active_group_id', activeId);
+                            localStorage.setItem('squad_active_group_id', activeId);
                         }
 
                         // 2. Charger membres du groupe actif
-                        const { data: mems, error: memsErr } = await supabaseClient
+                        const { data: mems } = await supabaseClient
                             .from('group_members')
                             .select('points, profiles(id, name, city, timezone)')
                             .eq('group_id', activeId);
 
-                        if (memsErr) throw memsErr;
-
-                        const formattedMems = (mems || [])
-                            .filter(m => m.profiles)
-                            .map(m => ({
-                                id: m.profiles.id,
-                                name: m.profiles.name,
-                                city: m.profiles.city,
-                                timezone: m.profiles.timezone,
-                                points: m.points
-                            }));
+                        const formattedMems = (mems || []).map(m => ({
+                            id: m.profiles.id,
+                            name: m.profiles.name,
+                            city: m.profiles.city,
+                            timezone: m.profiles.timezone,
+                            points: m.points
+                        }));
                         setMembers(formattedMems);
 
                         // 3. Charger défis du groupe actif
-                        const { data: challs, error: challsErr } = await supabaseClient
+                        const { data: challs } = await supabaseClient
                             .from('challenges')
                             .select('*')
                             .eq('group_id', activeId)
                             .order('created_at', { ascending: false });
-                        
-                        if (challsErr) throw challsErr;
                         setChallenges(challs || []);
 
                         // 4. Charger soumissions
-                        const { data: subs, error: subsErr } = await supabaseClient
+                        const { data: subs } = await supabaseClient
                             .from('submissions')
                             .select('*')
                             .eq('group_id', activeId)
                             .order('created_at', { ascending: false });
-
-                        if (subsErr) throw subsErr;
                         setSubmissions(subs || []);
                     }
                 } catch (error) {
-                    console.error("Erreur globale Supabase :", error);
-                    alert("⚠️ Erreur d'accès à la base de données :\n" + error.message + "\n\nAssurez-vous d'avoir bien exécuté le script SQL dans votre console Supabase.");
+                    console.error("Erreur de chargement :", error);
                 } finally {
                     setIsLoading(false);
                 }
@@ -258,7 +255,7 @@
             // Sauvegarder l'ID de groupe actif en local
             const handleGroupChange = (groupId) => {
                 setCurrentGroup(groupId);
-                safeSetLocalStorage('squad_active_group_id', groupId);
+                localStorage.setItem('squad_active_group_id', groupId);
             };
 
             // --- INSCRIPTION UTILISATEUR ---
@@ -271,37 +268,28 @@
                     id: userId,
                     name: regUserName,
                     city: regCity,
-                    timezone: regTimezone
+                    timezone: regTimezone,
+                    avatar_url: profilePhotoUrl || null
                 };
 
                 setIsLoading(true);
                 try {
                     // Insérer dans profils Supabase
-                    const { error } = await supabaseClient
-                        .from('profiles')
-                        .insert([newUser]);
-
-                    if (error) throw error;
-
+                    await supabaseClient.from('profiles').insert([newUser]);
                     setCurrentUser(newUser);
-                    try {
-                        localStorage.setItem('squad_current_user', JSON.stringify(newUser));
-                    } catch(e) {}
+                    localStorage.setItem('squad_current_user', JSON.stringify(newUser));
 
                     // L'associer au groupe actif s'il y en a un
                     if (currentGroup) {
-                        const { error: joinErr } = await supabaseClient
-                            .from('group_members')
-                            .insert([{
-                                group_id: currentGroup,
-                                profile_id: userId,
-                                points: 0
-                            }]);
-                        if (joinErr) throw joinErr;
-                        await loadData();
+                        await supabaseClient.from('group_members').insert([{
+                            group_id: currentGroup,
+                            profile_id: userId,
+                            points: 0
+                        }]);
+                        loadData();
                     }
                 } catch (error) {
-                    alert("❌ Impossible de s'inscrire :\n" + error.message);
+                    alert("Erreur lors de l'inscription : " + error.message);
                 } finally {
                     setIsLoading(false);
                 }
@@ -320,31 +308,26 @@
                         .eq('id', joinName.toLowerCase().trim())
                         .single();
 
-                    if (error) throw new Error("Groupe introuvable. Vérifie l'orthographe !");
-
                     if (data && data.password === joinPassword) {
                         setCurrentGroup(data.id);
-                        safeSetLocalStorage('squad_active_group_id', data.id);
+                        localStorage.setItem('squad_active_group_id', data.id);
                         setShowJoinModal(false);
 
                         // Ajouter l'utilisateur aux membres du groupe
                         if (currentUser) {
-                            const { error: memberError } = await supabaseClient
-                                .from('group_members')
-                                .upsert([{
-                                    group_id: data.id,
-                                    profile_id: currentUser.id,
-                                    points: 0
-                                }]);
-                            if (memberError) throw memberError;
+                            await supabaseClient.from('group_members').upsert([{
+                                group_id: data.id,
+                                profile_id: currentUser.id,
+                                points: 0
+                            }]);
                         }
                         await loadData();
                         alert(`Bienvenue dans le groupe : ${data.name} !`);
                     } else {
-                        alert("Mot de passe incorrect pour ce groupe.");
+                        alert("Groupe introuvable ou mot de passe incorrect.");
                     }
                 } catch (err) {
-                    alert("❌ Erreur de connexion au groupe :\n" + err.message);
+                    alert("Erreur de connexion : " + err.message);
                 } finally {
                     setIsLoading(false);
                 }
@@ -359,47 +342,38 @@
                 setIsLoading(true);
                 try {
                     // Créer le groupe
-                    const { error: groupErr } = await supabaseClient
-                        .from('groups')
-                        .insert([{
-                            id: newId,
-                            name: newGroupName,
-                            password: newGroupPass
-                        }]);
-
-                    if (groupErr) throw groupErr;
+                    await supabaseClient.from('groups').insert([{
+                        id: newId,
+                        name: newGroupName,
+                        password: newGroupPass
+                    }]);
 
                     // Associer le créateur
                     if (currentUser) {
-                        const { error: memberErr } = await supabaseClient
-                            .from('group_members')
-                            .insert([{
-                                group_id: newId,
-                                profile_id: currentUser.id,
-                                points: 0
-                            }]);
-                        if (memberErr) throw memberErr;
+                        await supabaseClient.from('group_members').insert([{
+                            group_id: newId,
+                            profile_id: currentUser.id,
+                            points: 0
+                        }]);
                     }
 
                     // Créer un premier défi par défaut
-                    const { error: challengeErr } = await supabaseClient
-                        .from('challenges')
-                        .insert([{
-                            id: 'c_' + Date.now(),
-                            group_id: newId,
-                            title: "Prendre un café en terrasse ☕",
-                            description: "Partage ton meilleur spot !",
-                            status: "active"
-                        }]);
-                    if (challengeErr) throw challengeErr;
+                    await supabaseClient.from('challenges').insert([{
+                        id: 'c_' + Date.now(),
+                        group_id: newId,
+                        title: "Prendre un café en terrasse ☕",
+                        description: "Partage ton meilleur spot !",
+                        status: "active",
+                        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+                    }]);
 
                     setCurrentGroup(newId);
-                    safeSetLocalStorage('squad_active_group_id', newId);
-                    setShowCreateModal(false);
+                    localStorage.setItem('squad_active_group_id', newId);
+                    setShowCreateGroupModal(false);
                     await loadData();
                     alert(`Groupe "${newGroupName}" créé !`);
                 } catch (err) {
-                    alert("❌ Erreur de création du groupe :\n" + err.message);
+                    alert("Erreur lors de la création : " + err.message);
                 } finally {
                     setIsLoading(false);
                 }
@@ -414,48 +388,49 @@
                 try {
                     // Passer l'ancien défi en statut "past"
                     if (challenges.length > 0) {
-                        const activeId = challenges.find(c => c.status === "active")?.id;
+                        const activeId = challenges.find(c => getChallengeRealityStatus(c) === "active")?.id;
                         if (activeId) {
-                            const { error: updateErr } = await supabaseClient
+                            await supabaseClient
                                 .from('challenges')
                                 .update({ status: 'past' })
                                 .eq('id', activeId);
-                            if (updateErr) throw updateErr;
                         }
                     }
 
                     // Insérer le nouveau défi
-                    const { error: insertErr } = await supabaseClient
-                        .from('challenges')
-                        .insert([{
-                            id: 'c_' + Date.now(),
-                            group_id: currentGroup,
-                            title: newChallengeTitle,
-                            description: newChallengeDesc,
-                            status: "active"
-                        }]);
-
-                    if (insertErr) throw insertErr;
+                    await supabaseClient.from('challenges').insert([{
+                        id: 'c_' + Date.now(),
+                        group_id: currentGroup,
+                        title: newChallengeTitle,
+                        description: newChallengeDesc,
+                        status: "active",
+                        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+                    }]);
 
                     setShowAddChallengeModal(false);
                     setNewChallengeTitle("");
                     setNewChallengeDesc("");
                     await loadData();
                 } catch (err) {
-                    alert("❌ Erreur d'ajout du défi :\n" + err.message);
+                    alert("Erreur d'ajout du défi : " + err.message);
                 } finally {
                     setIsLoading(false);
                 }
             };
 
-            // --- SOUMETTRE LE DÉFI AVEC PHOTO ---
+            // --- SOUMETTRE LE DÉFI AVEC PHOTO COMPRESSÉE ---
             const handlePhotoUpload = (e) => {
                 const file = e.target.files[0];
                 if (!file || !currentUser || !supabaseClient) return;
 
-                const activeChallenge = challenges.find(c => c.status === "active");
+                const activeChallenge = challenges.find(c => getChallengeRealityStatus(c) === "active");
                 if (!activeChallenge) {
-                    alert("Aucun défi actif !");
+                    alert("Aucun défi actif ou le défi est expiré.");
+                    return;
+                }
+
+                if (isChallengeExpired(activeChallenge)) {
+                    alert("Le défi a expiré. Propose un nouveau défi pour continuer !");
                     return;
                 }
 
@@ -463,7 +438,7 @@
                 const reader = new FileReader();
                 reader.onloadend = async () => {
                     try {
-                        const compressedB64 = await compressImage(reader.result);
+                        const compressedB64 = await compressImage(reader.result, 1080);
 
                         const newSub = {
                             id: 'sub_' + Date.now(),
@@ -478,29 +453,22 @@
                             liked_by: []
                         };
 
-                        // Sauvegarde dans Supabase
-                        const { error: subErr } = await supabaseClient
-                            .from('submissions')
-                            .insert([newSub]);
+                        const { error } = await supabaseClient.from('submissions').insert([newSub]);
+                        if (error) throw error;
 
-                        if (subErr) throw subErr;
-
-                        // Ajout de +50 points au joueur
                         const memberInfo = members.find(m => m.id === currentUser.id);
                         const currentPoints = memberInfo ? memberInfo.points : 0;
 
-                        const { error: ptsErr } = await supabaseClient
+                        await supabaseClient
                             .from('group_members')
-                            .update({ points: currentPoints + 50 })
+                            .update({ points: currentPoints + 100 })
                             .eq('group_id', currentGroup)
                             .eq('profile_id', currentUser.id);
 
-                        if (ptsErr) throw ptsErr;
-
-                        alert("Défi relevé ! +50 points ! 🎉");
+                        alert("Défi relevé ! +100 points ! 🎉");
                         await loadData();
                     } catch (err) {
-                        alert("❌ Erreur d'envoi de la preuve :\n" + err.message);
+                        alert("Erreur d'envoi : " + err.message);
                     } finally {
                         setIsLoading(false);
                     }
@@ -508,59 +476,57 @@
                 reader.readAsDataURL(file);
             };
 
-            // --- TESTER LA CONNEXION À LA BASE DE DONNÉES EN DIRECT ---
-            const testSupabaseConnection = async (urlToTest, keyToTest) => {
-                setConnectionTestStatus({ tested: true, success: false, message: "Connexion en cours..." });
-                
-                let cleanUrl = urlToTest.trim();
-                if (cleanUrl.endsWith('/')) cleanUrl = cleanUrl.slice(0, -1);
-                if (cleanUrl.endsWith('/rest/v1')) cleanUrl = cleanUrl.replace('/rest/v1', '');
-
-                try {
-                    const testClient = supabase.createClient(cleanUrl, keyToTest.trim());
-                    // On tente de lire une ligne de la table groups pour vérifier l'accès
-                    const { data, error } = await testClient.from('groups').select('*').limit(1);
-                    
-                    if (error) {
-                        // Si le problème vient du script SQL manquant
-                        if (error.code === 'PGRST116' || error.message.includes('relation "groups" does not exist')) {
-                            setConnectionTestStatus({
-                                tested: true,
-                                success: false,
-                                message: "⚠️ Identifiants OK, mais le script SQL n'a pas été lancé dans Supabase !"
-                            });
-                        } else {
-                            throw error;
-                        }
-                    } else {
-                        setConnectionTestStatus({
-                            tested: true,
-                            success: true,
-                            message: "✅ Connexion établie avec succès !"
-                        });
-                        // Sauvegarde immédiate
-                        safeSetLocalStorage('squad_sb_url', cleanUrl);
-                        safeSetLocalStorage('squad_sb_key', keyToTest.trim());
-                    }
-                } catch (err) {
-                    setConnectionTestStatus({
-                        tested: true,
-                        success: false,
-                        message: "❌ Erreur : " + err.message
-                    });
-                }
-            };
-
+            // --- CONFIGURER SUPABASE DEPUIS L'ÉCRAN ---
             const handleSetupDb = (e) => {
                 e.preventDefault();
-                let cleanUrl = sbUrl.trim();
-                if (cleanUrl.endsWith('/')) cleanUrl = cleanUrl.slice(0, -1);
-                if (cleanUrl.endsWith('/rest/v1')) cleanUrl = cleanUrl.replace('/rest/v1', '');
-
-                safeSetLocalStorage('squad_sb_url', cleanUrl);
-                safeSetLocalStorage('squad_sb_key', sbKey.trim());
+                localStorage.setItem('squad_sb_url', sbUrl);
+                localStorage.setItem('squad_sb_key', sbKey);
                 setShowDbSetup(false);
-                window.location.reload();
+                window.location.reload(); // Recharger pour initier la connexion
+            };
+
+            const handleEditProfile = async (e) => {
+                e.preventDefault();
+                if (!currentUser || !supabaseClient) return;
+
+                setIsLoading(true);
+                try {
+                    let avatarUrl = profilePhotoUrl;
+                    if (editAvatarFile) {
+                        const reader = new FileReader();
+                        const blobResult = await new Promise((resolve, reject) => {
+                            reader.onloadend = () => resolve(reader.result);
+                            reader.onerror = reject;
+                            reader.readAsDataURL(editAvatarFile);
+                        });
+                        avatarUrl = await compressImage(blobResult, 1080);
+                    }
+
+                    const updatedUser = {
+                        name: editName,
+                        city: editCity,
+                        timezone: editTimezone,
+                        avatar_url: avatarUrl
+                    };
+
+                    const { error } = await supabaseClient
+                        .from('profiles')
+                        .update(updatedUser)
+                        .eq('id', currentUser.id);
+
+                    if (error) throw error;
+
+                    const mergedUser = { ...currentUser, ...updatedUser };
+                    setCurrentUser(mergedUser);
+                    localStorage.setItem('squad_current_user', JSON.stringify(mergedUser));
+                    setProfilePhotoUrl(avatarUrl || "");
+                    setShowEditProfileModal(false);
+                    await loadData();
+                } catch (err) {
+                    alert("Erreur lors de la mise à jour du profil : " + err.message);
+                } finally {
+                    setIsLoading(false);
+                }
             };
 
             // --- METTRE UN SUPER-LIKE ---
@@ -568,18 +534,23 @@
                 if (!currentUser || !supabaseClient) return;
 
                 const submission = submissions.find(s => s.id === subId);
-                const activeChallenge = challenges.find(c => c.status === "active");
+                const activeChallenge = challenges.find(c => getChallengeRealityStatus(c) === "active");
 
-                if (!submission || !activeChallenge) return;
+                if (!submission) return;
 
                 if (submission.user_id === currentUser.id) {
                     alert("Tu ne peux pas t'attribuer ton propre Super Like ! 😉");
                     return;
                 }
 
-                const alreadyLiked = submissions.some(s => s.liked_by && s.liked_by.includes(currentUser.id));
+                const alreadyLiked = submission.liked_by && submission.liked_by.includes(currentUser.id);
                 if (alreadyLiked) {
-                    alert("Tu as déjà utilisé ton unique Super Like sur ce défi !");
+                    alert("Tu as déjà mis un Super Like sur cette proposition.");
+                    return;
+                }
+
+                if (!activeChallenge || activeChallenge.id !== submission.challenge_id) {
+                    alert("Ce défi n'est plus actif ou la publication est ancienne.");
                     return;
                 }
 
@@ -589,49 +560,40 @@
                     const updatedLikedBy = [...currentLikedBy, currentUser.id];
                     const updatedLikesCount = (submission.likes || 0) + 1;
 
-                    // Mettre à jour les likes sur la photo
-                    const { error: likeErr } = await supabaseClient
+                    await supabaseClient
                         .from('submissions')
                         .update({ likes: updatedLikesCount, liked_by: updatedLikedBy })
                         .eq('id', subId);
 
-                    if (likeErr) throw likeErr;
-
-                    // Trouver les points actuels du joueur liké pour lui ajouter +15 points
                     const creatorMember = members.find(m => m.id === submission.user_id);
                     const creatorPoints = creatorMember ? creatorMember.points : 0;
 
-                    const { error: creatorErr } = await supabaseClient
+                    await supabaseClient
                         .from('group_members')
-                        .update({ points: creatorPoints + 15 })
+                        .update({ points: creatorPoints + 25 })
                         .eq('group_id', currentGroup)
                         .eq('profile_id', submission.user_id);
 
-                    if (creatorErr) throw creatorErr;
-
-                    alert("Super Like envoyé ! Ton pote gagne +15 points ! 🚀");
+                    alert("Super Like envoyé ! Ton pote gagne +25 points ! 🚀");
                     await loadData();
                 } catch (err) {
-                    alert("❌ Erreur d'enregistrement du Super Like :\n" + err.message);
+                    alert("Erreur de Super Like : " + err.message);
                 } finally {
                     setIsLoading(false);
                 }
             };
 
             const activeGroupObj = groups.find(g => g.id === currentGroup) || { name: "SquadApp" };
-            const activeChallenge = challenges.find(c => c.status === "active");
-
-            // URL magique de partage avec les identifiants préremplis en paramètre
-            const shareableLink = window.location.origin + window.location.pathname + `?sb_url=${encodeURIComponent(sbUrl)}&sb_key=${encodeURIComponent(sbKey)}`;
+            const activeChallenge = challenges.find(c => getChallengeRealityStatus(c) === "active");
 
             // --- ÉCRAN 1 : CONFIGURATION BASE DE DONNÉES SI ABSENTE ---
             if (!sbUrl || !sbKey || showDbSetup) {
                 return (
                     <div class="p-6 flex flex-col justify-center items-center min-h-[600px] flex-grow bg-white">
-                        <div class="text-center mb-4">
+                        <div class="text-center mb-6">
                             <span class="text-5xl">⚡</span>
                             <h1 class="text-2xl font-bold text-gray-800 mt-2">Connecte ta base de données</h1>
-                            <p class="text-xs text-gray-400 mt-2 leading-relaxed">Saisis tes identifiants Supabase ci-dessous. Ils seront mémorisés sur ton navigateur.</p>
+                            <p class="text-sm text-gray-500 mt-2">Colle ici tes identifiants Supabase gratuits pour que tes amis puissent jouer avec toi en temps réel.</p>
                         </div>
 
                         <form onSubmit={handleSetupDb} class="w-full space-y-4">
@@ -642,7 +604,7 @@
                                     value={sbUrl} 
                                     onChange={e => setSbUrl(e.target.value)} 
                                     placeholder="https://xxxxxx.supabase.co" 
-                                    class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-pink-300 outline-none text-sm"
+                                    class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-pink-300 outline-none"
                                     required 
                                 />
                             </div>
@@ -653,45 +615,15 @@
                                     type="password" 
                                     value={sbKey} 
                                     onChange={e => setSbKey(e.target.value)} 
-                                    placeholder="sb_publishable_... ou eyJ..." 
-                                    class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-pink-300 outline-none text-sm"
+                                    placeholder="eyJhbGciOi..." 
+                                    class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-pink-300 outline-none"
                                     required 
                                 />
                             </div>
 
-                            {/* Bouton de test en direct */}
-                            <div class="flex space-x-2">
-                                <button 
-                                    type="button" 
-                                    onClick={() => testSupabaseConnection(sbUrl, sbKey)}
-                                    class="flex-1 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-bold text-xs transition"
-                                >
-                                    Tester la Connexion 🔌
-                                </button>
-                                
-                                <button 
-                                    type="submit" 
-                                    class="flex-1 py-2.5 bg-gradient-to-r from-pink-500 to-yellow-500 text-white rounded-xl font-bold text-xs shadow"
-                                >
-                                    Enregistrer & Ouvrir 🚀
-                                </button>
-                            </div>
-
-                            {/* Statut du test de connexion */}
-                            {connectionTestStatus.tested && (
-                                <div class={`p-3 rounded-xl text-xs font-medium ${
-                                    connectionTestStatus.success ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'
-                                }`}>
-                                    {connectionTestStatus.message}
-                                </div>
-                            )}
-
-                            {/* Conseils pour débutants */}
-                            <div class="bg-blue-50 border border-blue-100 p-4 rounded-xl text-[11px] text-blue-800 leading-relaxed">
-                                <i class="fa-solid fa-circle-info mr-1"></i>
-                                <strong>Conseil :</strong> Si la configuration ne reste pas enregistrée d'un rafraîchissement à l'autre, c'est que vous utilisez le navigateur interne d'une application (WhatsApp, Discord). 
-                                <span class="block mt-1 font-semibold">👉 Touchez les trois petits points en haut à droite de votre écran et choisissez "Ouvrir dans Chrome / Safari".</span>
-                            </div>
+                            <button type="submit" class="w-full py-3 bg-gradient-to-r from-pink-500 to-yellow-500 text-white rounded-xl font-bold shadow-lg">
+                                Connecter ma Base de Données 🔌
+                            </button>
                         </form>
                     </div>
                 );
@@ -735,7 +667,7 @@
                             </div>
 
                             <div>
-                                <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Fuseau horaire détecté</label>
+                                <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Fuseau horaire</label>
                                 <input 
                                     type="text" 
                                     value={regTimezone} 
@@ -756,24 +688,36 @@
             return (
                 <div class="flex flex-col h-full flex-grow bg-slate-50 relative">
                     
+                    {/* INDICATEUR DE CHARGEMENT */}
                     {isLoading && (
                         <div class="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-pink-500 to-yellow-400 animate-pulse z-50"></div>
                     )}
 
                     {/* --- HEADER --- */}
                     <header class="bg-white px-4 py-3 shadow-sm border-b border-gray-100 flex items-center justify-between sticky top-0 z-10">
-                        <div class="flex items-center space-x-2">
-                            <div class="w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 to-yellow-400 flex items-center justify-center text-white font-bold brand-font shadow">
-                                SQ
+                        <div class="flex items-center space-x-3">
+                            <div class="w-10 h-10 rounded-full overflow-hidden bg-gradient-to-tr from-pink-500 to-yellow-400 flex items-center justify-center text-white font-bold brand-font shadow">
+                                {profilePhotoUrl ? (
+                                    <img src={profilePhotoUrl} alt="Avatar" class="w-full h-full object-cover" />
+                                ) : (
+                                    currentUser?.name?.substring(0, 2).toUpperCase() || 'SQ'
+                                )}
                             </div>
                             <div>
-                                <h1 class="text-lg font-bold text-gray-800 leading-none">SquadApp</h1>
+                                <h1 class="text-lg font-bold text-gray-800 leading-none">{currentUser.name}</h1>
                                 <span class="text-[10px] text-gray-400">Heure Locale : {getLocalTime(currentUser.timezone)}</span>
                             </div>
                         </div>
+                        <div class="flex items-center space-x-2">
+                            <button 
+                                onClick={() => setShowEditProfileModal(true)}
+                                class="text-[11px] bg-pink-50 text-pink-600 px-3 py-2 rounded-2xl font-bold hover:bg-pink-100 transition"
+                            >
+                                Modifier mon profil
+                            </button>
 
-                        {/* Sélecteur de Groupe */}
-                        <div class="flex items-center space-x-1">
+                            {/* Sélecteur de Groupe */}
+                            <div class="flex items-center space-x-1">
                             <select 
                                 value={currentGroup} 
                                 onChange={e => handleGroupChange(e.target.value)} 
@@ -791,6 +735,7 @@
                                 <i class="fa-solid fa-plus-minus"></i>
                             </button>
                         </div>
+                    </div>
                     </header>
 
                     {/* --- HORLOGES MONDIALES DES MEMBRES ACTIFS EN TEMPS RÉEL --- */}
@@ -821,88 +766,102 @@
                         {/* --- TAB FEED --- */}
                         {activeTab === "feed" && (
                             <div class="space-y-4">
-                                
-                                {/* Carte du défi de la semaine */}
-                                {activeChallenge ? (
-                                    <div class="bg-gradient-to-tr from-pink-500 via-purple-500 to-indigo-600 rounded-2xl p-5 text-white shadow-xl relative overflow-hidden">
-                                        <div class="absolute right-[-20px] top-[-20px] w-32 h-32 bg-white opacity-10 rounded-full"></div>
-                                        <div class="flex justify-between items-start">
-                                            <span class="bg-white bg-opacity-25 text-xs font-bold px-2.5 py-1 rounded-full uppercase tracking-wider">
-                                                Défi Actif 🔥
-                                            </span>
-                                            <button 
-                                                onClick={() => setShowAddChallengeModal(true)}
-                                                class="text-xs bg-white text-purple-600 font-bold px-2 py-1 rounded-lg hover:bg-opacity-90 transition"
-                                            >
-                                                Nouveau Défi
-                                            </button>
-                                        </div>
-                                        <h3 class="text-2xl font-bold mt-3 leading-snug">{activeChallenge.title}</h3>
-                                        <p class="text-sm text-purple-100 mt-1">{activeChallenge.description}</p>
-                                        
-                                        <div class="mt-4 pt-4 border-t border-white border-opacity-20 flex justify-between items-center">
-                                            <span class="text-xs text-purple-100">Rapporte +50 pts (+15 pts par Super Like)</span>
-                                            <label class="bg-yellow-400 hover:bg-yellow-300 text-slate-900 font-bold text-xs px-4 py-2 rounded-xl shadow cursor-pointer transition transform active:scale-95 flex items-center space-x-1">
-                                                <i class="fa-solid fa-camera"></i>
-                                                <span>Relever le défi</span>
-                                                <input type="file" accept="image/*" onChange={handlePhotoUpload} class="hidden" />
-                                            </label>
-                                        </div>
-                                    </div>
-                                ) : (
-                                    <div class="bg-white rounded-2xl p-6 text-center border-2 border-dashed border-gray-200">
-                                        <p class="text-gray-500">Aucun défi hebdomadaire actif.</p>
+                                <div className={`${activeChallenge && !isChallengeExpired(activeChallenge) ? 'bg-gradient-to-tr from-pink-500 via-purple-500 to-indigo-600 text-white' : 'bg-slate-100 text-slate-700'} rounded-2xl p-5 shadow-xl relative overflow-hidden`}>
+                                    <div class="absolute right-[-20px] top-[-20px] w-32 h-32 bg-white opacity-10 rounded-full"></div>
+                                    <div class="flex justify-between items-start">
+                                        <span className={`${activeChallenge && !isChallengeExpired(activeChallenge) ? 'bg-white bg-opacity-25 text-xs text-white' : 'bg-gray-200 text-slate-500'} font-bold px-2.5 py-1 rounded-full uppercase tracking-wider`}>Défi Hebdo</span>
                                         <button 
                                             onClick={() => setShowAddChallengeModal(true)}
-                                            class="mt-3 bg-pink-500 text-white font-bold text-xs px-4 py-2 rounded-xl"
+                                            className={`${activeChallenge && !isChallengeExpired(activeChallenge) ? 'bg-white text-purple-600' : 'bg-pink-500 text-white'} text-xs font-bold px-2 py-1 rounded-lg hover:bg-opacity-90 transition`}
                                         >
                                             Proposer un défi
                                         </button>
                                     </div>
-                                )}
-
-                                {/* Galerie photo / Preuves */}
-                                <div class="space-y-4">
-                                    <h3 class="text-sm font-bold text-gray-500 uppercase tracking-wider mt-6">Preuves de la tribu</h3>
-                                    
-                                    {submissions.length === 0 ? (
-                                        <div class="text-center py-8 text-gray-400">
-                                            <i class="fa-solid fa-images text-3xl mb-2 text-gray-300"></i>
-                                            <p class="text-xs">Personne n'a encore validé le défi. Sois le premier !</p>
-                                        </div>
-                                    ) : (
-                                        submissions.map(sub => (
-                                            <div key={sub.id} class="bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-100">
-                                                <div class="px-4 py-3 flex justify-between items-center">
-                                                    <div>
-                                                        <span class="font-bold text-gray-800 text-sm">{sub.user_name}</span>
-                                                        <span class="text-xs text-gray-400 ml-1.5">depuis {sub.user_city}</span>
-                                                    </div>
-                                                    <span class="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-bold">
-                                                        {getLocalTime(sub.user_timezone).substring(0, 5)} local
-                                                    </span>
-                                                </div>
-                                                
-                                                <div class="aspect-square bg-slate-100 overflow-hidden relative">
-                                                    <img src={sub.photo} alt="Preuve défi" class="w-full h-full object-cover" />
-                                                </div>
-
-                                                <div class="px-4 py-3 bg-slate-50 flex justify-between items-center">
-                                                    <div class="flex items-center space-x-1">
-                                                        <span class="text-pink-500 text-lg">⭐</span>
-                                                        <span class="text-xs font-bold text-gray-600">{sub.likes} Super Like{sub.likes > 1 ? 's' : ''}</span>
-                                                    </div>
-                                                    <button 
-                                                        onClick={() => handleSuperLike(sub.id)}
-                                                        class="bg-pink-500 hover:bg-pink-600 text-white text-xs font-bold px-3 py-1.5 rounded-xl shadow-sm transition transform active:scale-95 flex items-center space-x-1"
-                                                    >
-                                                        <i class="fa-solid fa-star text-yellow-300"></i>
-                                                        <span>Donner mon Super Like !</span>
-                                                    </button>
-                                                </div>
+                                    {activeChallenge ? (
+                                        <>
+                                            <h3 class="text-2xl font-bold mt-3 leading-snug">{activeChallenge.title}</h3>
+                                            <p className={`text-sm ${activeChallenge && !isChallengeExpired(activeChallenge) ? 'text-purple-100' : 'text-slate-500'} mt-1`}>{activeChallenge.description || 'Un défi rapide à relever !'}</p>
+                                            <div class="mt-4 grid gap-2 md:grid-cols-2">
+                                                <span class={`inline-flex items-center rounded-full px-3 py-2 text-[11px] font-semibold ${isChallengeExpired(activeChallenge) ? 'bg-slate-200 text-slate-500' : 'bg-white bg-opacity-20 text-white'}`}>
+                                                    {isChallengeExpired(activeChallenge) ? 'Défi expiré' : `Valide encore ${getChallengeRemaining(activeChallenge)}`}
+                                                </span>
+                                                <span class={`inline-flex items-center rounded-full px-3 py-2 text-[11px] font-semibold ${isChallengeExpired(activeChallenge) ? 'bg-slate-200 text-slate-500' : 'bg-white bg-opacity-20 text-white'}`}>
+                                                    Créé le {new Date(activeChallenge.created_at).toLocaleDateString('fr-FR')}
+                                                </span>
                                             </div>
-                                        ))
+                                            <div className={`mt-4 pt-4 border-t ${activeChallenge && !isChallengeExpired(activeChallenge) ? 'border-white border-opacity-20' : 'border-slate-200'} flex flex-col gap-3 md:flex-row md:items-center md:justify-between`}>
+                                                <span className={`text-xs ${activeChallenge && !isChallengeExpired(activeChallenge) ? 'text-white' : 'text-slate-500'}`}>Rapporte +100 pts (+25 pts par Super Like)</span>
+                                                <label className={`inline-flex items-center justify-center ${isChallengeExpired(activeChallenge) ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'} bg-yellow-400 hover:bg-yellow-300 text-slate-900 font-bold text-xs px-4 py-2 rounded-xl shadow transition transform active:scale-95`}>
+                                                    <i class="fa-solid fa-camera"></i>
+                                                    <span>Relever le défi</span>
+                                                    <input type="file" accept="image/*" onChange={handlePhotoUpload} class="hidden" disabled={isChallengeExpired(activeChallenge)} />
+                                                </label>
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <div class="mt-4 text-sm text-slate-500">
+                                            <p>Aucun défi hebdomadaire actif en ce moment.</p>
+                                            <p class="mt-2 text-xs text-slate-400">Crée un nouveau défi et fais participer toute la bande.</p>
+                                        </div>
                                     )}
+                                </div>
+
+                                <div class="bg-white rounded-3xl p-4 shadow-sm border border-gray-100">
+                                    <div class="flex items-center justify-between mb-4">
+                                        <div>
+                                            <h3 class="text-sm font-bold uppercase tracking-wider text-gray-500">Tous les défis</h3>
+                                            <p class="text-[11px] text-gray-400">Voir l'historique et les réponses de chaque défi.</p>
+                                        </div>
+                                        <span class="text-[11px] text-gray-400">{challenges.length} défi(s)</span>
+                                    </div>
+                                    <div class="space-y-3">
+                                        {challenges.length === 0 ? (
+                                            <div class="rounded-3xl border border-dashed border-gray-200 p-4 text-center text-xs text-gray-400">Aucun défi créé pour le moment.</div>
+                                        ) : challenges.map(challenge => {
+                                            const expired = isChallengeExpired(challenge);
+                                            const challengeSubs = submissions.filter(sub => sub.challenge_id === challenge.id);
+                                            return (
+                                                <div key={challenge.id} class={`rounded-3xl p-4 border ${expired ? 'bg-slate-50 border-slate-200 opacity-90' : 'bg-white border-gray-200'}`}>
+                                                    <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                                                        <div>
+                                                            <p class="font-bold text-gray-800 text-sm">{challenge.title}</p>
+                                                            <p class="text-[11px] text-gray-500 mt-1">{challenge.description || 'Aucune description fournie.'}</p>
+                                                            <div class="mt-3 flex flex-wrap gap-2 text-[11px] text-gray-500">
+                                                                <span class="rounded-full bg-slate-100 px-2 py-1">{expired ? 'Expiré' : `Encore ${getChallengeRemaining(challenge)}`}</span>
+                                                                <span class="rounded-full bg-slate-100 px-2 py-1">Créé le {new Date(challenge.created_at).toLocaleDateString('fr-FR')}</span>
+                                                            </div>
+                                                        </div>
+                                                        <button 
+                                                            onClick={() => setExpandedChallengeId(expandedChallengeId === challenge.id ? null : challenge.id)}
+                                                            class="self-start text-xs font-bold text-pink-500"
+                                                        >
+                                                            {expandedChallengeId === challenge.id ? 'Masquer les réponses' : 'Voir les réponses'} ({challengeSubs.length})
+                                                        </button>
+                                                    </div>
+                                                    {expandedChallengeId === challenge.id && (
+                                                        <div class="mt-4 space-y-3">
+                                                            {challengeSubs.length === 0 ? (
+                                                                <p class="text-xs text-gray-400">Aucune participation pour ce défi.</p>
+                                                            ) : challengeSubs.map(sub => (
+                                                                <div key={sub.id} class="rounded-2xl border border-gray-200 overflow-hidden">
+                                                                    <div class="px-4 py-3 flex items-center justify-between gap-3 bg-slate-50">
+                                                                        <div>
+                                                                            <p class="font-bold text-gray-800 text-sm">{sub.user_name}</p>
+                                                                            <p class="text-[11px] text-gray-500">{sub.user_city} • {getLocalTime(sub.user_timezone).substring(0, 5)} local</p>
+                                                                        </div>
+                                                                        <span class="text-[11px] text-slate-500">{sub.likes} SL</span>
+                                                                    </div>
+                                                                    <div class="bg-slate-100 overflow-hidden">
+                                                                        <img src={sub.photo} alt="Preuve défi" class="w-full h-full object-contain max-h-[360px]" />
+                                                                    </div>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
                                 </div>
                             </div>
                         )}
@@ -932,7 +891,7 @@
                                                     </span>
                                                     <div>
                                                         <p class="font-bold text-gray-800 text-sm">{mem.name}</p>
-                                                        <span class="text-[10px] text-gray-400 uppercase tracking-wider">{mem.city}</span>
+                                                        <span class="text-[10px] text-gray-400 uppercase tracking-wider">{mem.city} • {getLocalTime(mem.timezone).substring(0, 5)}</span>
                                                     </div>
                                                 </div>
                                                 <div class="text-right">
@@ -964,19 +923,31 @@
                                             <span class="font-bold text-gray-800">{activeGroupObj.password}</span>
                                         </div>
                                     </div>
-                                    <div class="mt-4 bg-yellow-50 text-yellow-800 p-3 rounded-xl text-[11px] leading-relaxed">
-                                        📢 <strong>Lien magique pour rejoindre :</strong> Envoie ce lien à tes amis pour qu'ils soient connectés au même serveur automatiquement sans avoir à le configurer :
-                                        <textarea readonly onClick={(e) => e.target.select()} class="w-full mt-2 p-2 rounded bg-white border text-[10px] font-mono select-all h-20 outline-none text-slate-600 leading-tight" value={shareableLink}></textarea>
-                                        <span class="block mt-1 font-bold text-pink-600">💡 Touche le champ pour tout sélectionner et copier !</span>
+                                    <div class="mt-4 bg-yellow-50 text-yellow-800 p-3 rounded-xl text-[11px]">
+                                        📢 <strong>Méthode pour rejoindre :</strong> Tes potes n'ont qu'à ouvrir le site, cliquer sur le bouton <strong>+</strong> en haut à droite, puis rentrer l'Identifiant et le Mot de passe.
                                     </div>
                                 </div>
 
                                 <div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 space-y-3">
-                                    <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Base de Données connectée</h3>
-                                    <p class="text-xs text-gray-500">Ton application est actuellement liée en direct à ton serveur Supabase.</p>
+                                    <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Ton compte</h3>
+                                    <p class="text-xs text-gray-500">Modifie ton pseudo, ta photo de profil ou ton fuseau horaire.</p>
+                                    <div class="flex flex-col gap-2">
+                                        <button 
+                                            onClick={() => setShowEditProfileModal(true)}
+                                            class="w-full py-3 bg-pink-50 text-pink-600 rounded-xl font-bold text-xs hover:bg-pink-100 transition"
+                                        >
+                                            Modifier mon profil
+                                        </button>
+                                        <button 
+                                            onClick={() => setShowCreateGroupModal(true)}
+                                            class="w-full py-3 bg-slate-50 text-slate-800 rounded-xl font-bold text-xs hover:bg-slate-100 transition"
+                                        >
+                                            Créer un nouveau groupe
+                                        </button>
+                                    </div>
                                     <button 
                                         onClick={() => setShowDbSetup(true)}
-                                        class="text-xs font-bold text-blue-500 hover:underline"
+                                        class="w-full py-3 bg-white text-blue-500 rounded-xl border border-blue-100 font-bold text-xs hover:bg-blue-50 transition"
                                     >
                                         Modifier la configuration Supabase URL / Clef
                                     </button>
@@ -984,7 +955,7 @@
 
                                 <button 
                                     onClick={() => {
-                                        try { localStorage.clear(); } catch(e){}
+                                        localStorage.clear();
                                         window.location.reload();
                                     }}
                                     class="w-full py-3 bg-red-50 text-red-500 rounded-xl font-bold text-xs hover:bg-red-100 transition"
@@ -1014,11 +985,11 @@
                         </button>
 
                         <button 
-                            onClick={() => setShowCreateModal(true)} 
-                            title="Créer un groupe"
+                            onClick={() => setShowAddChallengeModal(true)} 
+                            title="Proposer un défi"
                             class="w-12 h-12 rounded-full bg-gradient-to-tr from-pink-500 to-yellow-500 text-white flex items-center justify-center shadow-lg -translate-y-4 hover:opacity-90 transform active:scale-95 transition"
                         >
-                            <i class="fa-solid fa-users text-lg"></i>
+                            <i class="fa-solid fa-plus text-lg"></i>
                         </button>
 
                         <button 
@@ -1054,12 +1025,12 @@
                     )}
 
                     {/* --- MODAL CRÉER GROUPE --- */}
-                    {showCreateModal && (
+                    {showCreateGroupModal && (
                         <div class="absolute inset-0 bg-slate-950 bg-opacity-60 flex items-center justify-center z-50 p-4">
                             <div class="bg-white rounded-2xl p-6 w-full max-w-sm space-y-4">
                                 <div class="flex justify-between items-center">
                                     <h3 class="font-bold text-gray-800 text-lg">Lancer un nouveau groupe</h3>
-                                    <button onClick={() => setShowCreateModal(false)} class="text-gray-400 hover:text-gray-600"><i class="fa-solid fa-xmark"></i></button>
+                                    <button onClick={() => setShowCreateGroupModal(false)} class="text-gray-400 hover:text-gray-600"><i class="fa-solid fa-xmark"></i></button>
                                 </div>
                                 <form onSubmit={handleCreateGroup} class="space-y-3">
                                     <div>
@@ -1071,6 +1042,47 @@
                                         <input type="password" value={newGroupPass} onChange={e => setNewGroupPass(e.target.value)} placeholder="Sélectionne un code d'accès" class="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-pink-300 outline-none text-sm" required />
                                     </div>
                                     <button type="submit" class="w-full py-2.5 bg-gradient-to-r from-pink-500 to-yellow-500 text-white font-bold text-sm rounded-xl">Lancer mon groupe 🚀</button>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* --- MODAL MODIFIER PROFIL --- */}
+                    {showEditProfileModal && (
+                        <div class="absolute inset-0 bg-slate-950 bg-opacity-60 flex items-center justify-center z-50 p-4">
+                            <div class="bg-white rounded-2xl p-6 w-full max-w-sm space-y-4">
+                                <div class="flex justify-between items-center">
+                                    <h3 class="font-bold text-gray-800 text-lg">Modifier mon profil</h3>
+                                    <button onClick={() => setShowEditProfileModal(false)} class="text-gray-400 hover:text-gray-600"><i class="fa-solid fa-xmark"></i></button>
+                                </div>
+                                <form onSubmit={handleEditProfile} class="space-y-3">
+                                    <div class="flex flex-col items-center gap-3">
+                                        <div class="w-24 h-24 rounded-full overflow-hidden bg-slate-100 flex items-center justify-center">
+                                            {profilePhotoUrl ? (
+                                                <img src={profilePhotoUrl} alt="Avatar" class="w-full h-full object-cover" />
+                                            ) : (
+                                                <span class="text-2xl text-slate-500">{currentUser.name?.substring(0,2).toUpperCase()}</span>
+                                            )}
+                                        </div>
+                                        <label class="flex items-center justify-center gap-2 px-4 py-2 rounded-full bg-pink-50 text-pink-600 text-xs font-bold cursor-pointer hover:bg-pink-100 transition">
+                                            <i class="fa-solid fa-camera"></i>
+                                            <span>Changer la photo</span>
+                                            <input type="file" accept="image/*" onChange={e => setEditAvatarFile(e.target.files[0])} class="hidden" />
+                                        </label>
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs text-gray-400 mb-1">Pseudo</label>
+                                        <input type="text" value={editName} onChange={e => setEditName(e.target.value)} class="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-pink-300 outline-none text-sm" required />
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs text-gray-400 mb-1">Ville</label>
+                                        <input type="text" value={editCity} onChange={e => setEditCity(e.target.value)} class="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-pink-300 outline-none text-sm" required />
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs text-gray-400 mb-1">Fuseau horaire</label>
+                                        <input type="text" value={editTimezone} onChange={e => setEditTimezone(e.target.value)} class="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-pink-300 outline-none text-sm" required />
+                                    </div>
+                                    <button type="submit" class="w-full py-2.5 bg-pink-500 text-white font-bold text-sm rounded-xl">Enregistrer les changements</button>
                                 </form>
                             </div>
                         </div>
