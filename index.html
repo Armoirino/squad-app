@@ -96,7 +96,7 @@
             
             // UI
             const [activeTab, setActiveTab] = useState("feed");
-            const [showJoinModal, setShowJoinModal] = useState(false);
+            const [showGroupActionModal, setShowGroupActionModal] = useState(false);
             const [showAddChallengeModal, setShowAddChallengeModal] = useState(false);
             const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
             const [showDbSetup, setShowDbSetup] = useState(false);
@@ -109,9 +109,14 @@
             const [newGroupPass, setNewGroupPass] = useState("");
             const [regUserName, setRegUserName] = useState("");
             const [regCity, setRegCity] = useState("");
+            const [regPassword, setRegPassword] = useState("");
             const [regTimezone, setRegTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone);
+            const [loginName, setLoginName] = useState("");
+            const [loginPassword, setLoginPassword] = useState("");
+            const [showLoginSection, setShowLoginSection] = useState(false);
             const [newChallengeTitle, setNewChallengeTitle] = useState("");
             const [newChallengeDesc, setNewChallengeDesc] = useState("");
+            const [submissionDescription, setSubmissionDescription] = useState("");
             const [profilePhotoUrl, setProfilePhotoUrl] = useState("");
             const [editName, setEditName] = useState("");
             const [editCity, setEditCity] = useState("");
@@ -234,12 +239,15 @@
                     const { data: grps } = await supabaseClient.from('groups').select('*');
                     setGroups(grps || []);
 
-                    if (grps && grps.length > 0) {
-                        const activeId = currentGroup || grps[0].id;
-                        if (!currentGroup) {
-                            setCurrentGroup(activeId);
-                            localStorage.setItem('squad_active_group_id', activeId);
-                        }
+                    if (!currentGroup) {
+                        setMembers([]);
+                        setChallenges([]);
+                        setSubmissions([]);
+                        setExpandedChallengeId(null);
+                    }
+
+                    if (grps && grps.length > 0 && currentGroup) {
+                        const activeId = currentGroup;
 
                         // 2. Charger membres du groupe actif
                         const { data: mems } = await supabaseClient
@@ -288,7 +296,15 @@
             // Sauvegarder l'ID de groupe actif en local
             const handleGroupChange = (groupId) => {
                 setCurrentGroup(groupId);
-                localStorage.setItem('squad_active_group_id', groupId);
+                if (groupId) {
+                    localStorage.setItem('squad_active_group_id', groupId);
+                } else {
+                    localStorage.removeItem('squad_active_group_id');
+                }
+                setMembers([]);
+                setChallenges([]);
+                setSubmissions([]);
+                setExpandedChallengeId(null);
             };
 
             // --- INSCRIPTION UTILISATEUR ---
@@ -302,7 +318,8 @@
                     name: regUserName,
                     city: regCity,
                     timezone: regTimezone,
-                    avatar_url: profilePhotoUrl || null
+                    avatar_url: profilePhotoUrl || null,
+                    password: regPassword
                 };
 
                 setIsLoading(true);
@@ -328,6 +345,34 @@
                 }
             };
 
+            const handleLogin = async (e) => {
+                e.preventDefault();
+                if (!loginName || !loginPassword || !supabaseClient) return;
+
+                setIsLoading(true);
+                try {
+                    const { data, error } = await supabaseClient
+                        .from('profiles')
+                        .select('*')
+                        .eq('name', loginName.trim())
+                        .single();
+
+                    if (error || !data || data.password !== loginPassword) {
+                        alert("Pseudo ou mot de passe incorrect.");
+                        return;
+                    }
+
+                    setCurrentUser(data);
+                    localStorage.setItem('squad_current_user', JSON.stringify(data));
+                    setProfilePhotoUrl(data.avatar_url || data.photo_url || "");
+                    setShowLoginSection(false);
+                } catch (err) {
+                    alert("Erreur de connexion : " + err.message);
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+
             // --- REJOINDRE UN GROUPE ---
             const handleJoinGroup = async (e) => {
                 e.preventDefault();
@@ -344,7 +389,7 @@
                     if (data && data.password === joinPassword) {
                         setCurrentGroup(data.id);
                         localStorage.setItem('squad_active_group_id', data.id);
-                        setShowJoinModal(false);
+                        setShowGroupActionModal(false);
 
                         // Ajouter l'utilisateur aux membres du groupe
                         if (currentUser) {
@@ -397,7 +442,8 @@
                         title: "Prendre un café en terrasse ☕",
                         description: "Partage ton meilleur spot !",
                         status: "active",
-                        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+                        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+                        created_by: currentUser?.id || null
                     }]);
 
                     setCurrentGroup(newId);
@@ -412,10 +458,36 @@
                 }
             };
 
+            const handleLeaveGroup = async () => {
+                if (!supabaseClient || !currentGroup || !currentUser) return;
+                setIsLoading(true);
+                try {
+                    await supabaseClient
+                        .from('group_members')
+                        .delete()
+                        .eq('group_id', currentGroup)
+                        .eq('profile_id', currentUser.id);
+
+                    setCurrentGroup("");
+                    localStorage.removeItem('squad_active_group_id');
+                    setShowGroupActionModal(false);
+                    await loadData();
+                    alert("Tu as quitté le groupe.");
+                } catch (err) {
+                    alert("Erreur en quittant le groupe : " + err.message);
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+
             // --- PROPOSER UN DÉFI ---
             const handleAddChallenge = async (e) => {
                 e.preventDefault();
                 if (!newChallengeTitle || !supabaseClient) return;
+                if (!currentGroup) {
+                    alert("Rejoins un groupe avant de proposer un défi.");
+                    return;
+                }
 
                 setIsLoading(true);
                 try {
@@ -431,13 +503,32 @@
                     }
 
                     // Insérer le nouveau défi
+                    if (!currentUser) {
+                        throw new Error("Connecte-toi pour proposer un défi.");
+                    }
+
+                    const weekAgoIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+                    const { data: recentChallenges } = await supabaseClient
+                        .from('challenges')
+                        .select('id')
+                        .eq('created_by', currentUser.id)
+                        .eq('group_id', currentGroup)
+                        .gte('created_at', weekAgoIso)
+                        .limit(1);
+
+                    if (recentChallenges && recentChallenges.length > 0) {
+                        alert("Tu as déjà proposé un défi cette semaine. Attend la fin de la semaine pour en proposer un nouveau.");
+                        return;
+                    }
+
                     await supabaseClient.from('challenges').insert([{
                         id: 'c_' + Date.now(),
                         group_id: currentGroup,
                         title: newChallengeTitle,
                         description: newChallengeDesc,
                         status: "active",
-                        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+                        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+                        created_by: currentUser.id
                     }]);
 
                     setShowAddChallengeModal(false);
@@ -471,6 +562,19 @@
                 const reader = new FileReader();
                 reader.onloadend = async () => {
                     try {
+                        const { data: existingSubmission } = await supabaseClient
+                            .from('submissions')
+                            .select('id')
+                            .eq('challenge_id', activeChallenge.id)
+                            .eq('user_id', currentUser.id)
+                            .limit(1);
+
+                        if (existingSubmission && existingSubmission.length > 0) {
+                            alert("Tu as déjà participé à ce défi une fois.");
+                            setIsLoading(false);
+                            return;
+                        }
+
                         const compressedB64 = await compressImage(reader.result, 1080);
 
                         const newSub = {
@@ -481,6 +585,7 @@
                             user_name: currentUser.name,
                             user_city: currentUser.city,
                             user_timezone: currentUser.timezone,
+                            description: submissionDescription || null,
                             photo: compressedB64,
                             likes: 0,
                             liked_by: []
@@ -499,6 +604,7 @@
                             .eq('profile_id', currentUser.id);
 
                         alert("Défi relevé ! +100 points ! 🎉");
+                        setSubmissionDescription("");
                         await loadData();
                     } catch (err) {
                         alert("Erreur d'envoi : " + err.message);
@@ -700,23 +806,54 @@
                             </div>
 
                             <div>
-                                <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Fuseau horaire</label>
-                                <select 
-                                    value={regTimezone}
-                                    onChange={e => setRegTimezone(e.target.value)}
-                                    class="w-full px-4 py-3 rounded-xl border border-gray-200 bg-white text-gray-800 text-sm"
-                                    required
-                                >
-                                    {timezoneOptions.map(tz => (
-                                        <option key={tz} value={tz}>{getTimezoneLabel(tz)}</option>
-                                    ))}
-                                </select>
+                                <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Mot de passe</label>
+                                <input 
+                                    type="password" 
+                                    value={regPassword} 
+                                    onChange={e => setRegPassword(e.target.value)} 
+                                    placeholder="Choisis un mot de passe sécurisé" 
+                                    class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-pink-300 transition"
+                                    required 
+                                />
+                            </div>
+
+                            <div class="text-center text-sm text-gray-500 py-2 border-t border-gray-200">
+                                Déjà un compte ? <button type="button" onClick={() => setShowLoginSection(!showLoginSection)} class="text-pink-600 font-bold hover:underline">Se connecter</button>
                             </div>
 
                             <button type="submit" disabled={isLoading} class="w-full py-3 bg-gradient-to-r from-pink-500 to-yellow-500 text-white rounded-xl font-bold shadow-lg disabled:opacity-50">
                                 {isLoading ? "Création..." : "Commencer l'aventure 🚀"}
                             </button>
                         </form>
+
+                        {showLoginSection && (
+                            <form onSubmit={handleLogin} class="mt-4 space-y-4 bg-slate-50 p-4 rounded-3xl border border-gray-200">
+                                <h3 class="text-sm font-bold text-gray-700">Connexion</h3>
+                                <div>
+                                    <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Pseudo</label>
+                                    <input 
+                                        type="text"
+                                        value={loginName}
+                                        onChange={e => setLoginName(e.target.value)}
+                                        placeholder="Ton pseudo"
+                                        class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-pink-300 transition"
+                                        required
+                                    />
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Mot de passe</label>
+                                    <input 
+                                        type="password"
+                                        value={loginPassword}
+                                        onChange={e => setLoginPassword(e.target.value)}
+                                        placeholder="Ton mot de passe"
+                                        class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-pink-300 transition"
+                                        required
+                                    />
+                                </div>
+                                <button type="submit" class="w-full py-3 bg-white text-pink-600 rounded-xl font-bold border border-pink-100 hover:bg-pink-50 transition">Se connecter</button>
+                            </form>
+                        )}
                     </div>
                 );
             }
@@ -746,13 +883,6 @@
                             </div>
                         </div>
                         <div class="flex items-center space-x-2">
-                            <button 
-                                onClick={() => setShowEditProfileModal(true)}
-                                class="text-[11px] bg-pink-50 text-pink-600 px-3 py-2 rounded-2xl font-bold hover:bg-pink-100 transition"
-                            >
-                                Modifier mon profil
-                            </button>
-
                             {/* Sélecteur de Groupe */}
                             <div class="flex items-center space-x-1">
                             <select 
@@ -760,13 +890,14 @@
                                 onChange={e => handleGroupChange(e.target.value)} 
                                 class="bg-gray-100 text-gray-800 text-xs font-bold rounded-lg px-2.5 py-1.5 focus:outline-none border-none cursor-pointer hover:bg-gray-200 transition"
                             >
-                                {groups.length === 0 ? <option>Pas de groupe</option> : groups.map(g => (
+                                <option value="">Aucun groupe</option>
+                                {groups.map(g => (
                                     <option key={g.id} value={g.id}>{g.name}</option>
                                 ))}
                             </select>
                             <button 
-                                onClick={() => setShowJoinModal(true)} 
-                                title="Rejoindre un groupe" 
+                                onClick={() => setShowGroupActionModal(true)} 
+                                title="Gérer un groupe" 
                                 class="w-8 h-8 rounded-lg bg-pink-50 text-pink-500 hover:bg-pink-100 flex items-center justify-center text-sm transition"
                             >
                                 <i class="fa-solid fa-plus-minus"></i>
@@ -792,14 +923,6 @@
                     {/* --- CONTENU --- */}
                     <main class="flex-grow p-4 overflow-y-auto max-h-[640px] no-scrollbar pb-24">
                         
-                        {/* REFRESH MANUEL */}
-                        <div class="flex justify-end mb-2">
-                            <button onClick={loadData} class="text-xs text-gray-400 hover:text-gray-600 flex items-center space-x-1">
-                                <i class="fa-solid fa-arrows-rotate"></i>
-                                <span>Actualiser</span>
-                            </button>
-                        </div>
-
                         {/* --- TAB FEED --- */}
                         {activeTab === "feed" && (
                             <div class="space-y-4">
@@ -807,12 +930,6 @@
                                     <div class="absolute right-[-20px] top-[-20px] w-32 h-32 bg-white opacity-10 rounded-full"></div>
                                     <div class="flex justify-between items-start">
                                         <span className={`${activeChallenge && !isChallengeExpired(activeChallenge) ? 'bg-white bg-opacity-25 text-xs text-white' : 'bg-gray-200 text-slate-500'} font-bold px-2.5 py-1 rounded-full uppercase tracking-wider`}>Défi Hebdo</span>
-                                        <button 
-                                            onClick={() => setShowAddChallengeModal(true)}
-                                            className={`${activeChallenge && !isChallengeExpired(activeChallenge) ? 'bg-white text-purple-600' : 'bg-pink-500 text-white'} text-xs font-bold px-2 py-1 rounded-lg hover:bg-opacity-90 transition`}
-                                        >
-                                            Proposer un défi
-                                        </button>
                                     </div>
                                     {activeChallenge ? (
                                         <>
@@ -822,17 +939,23 @@
                                                 <span class={`inline-flex items-center rounded-full px-3 py-2 text-[11px] font-semibold ${isChallengeExpired(activeChallenge) ? 'bg-slate-200 text-slate-500' : 'bg-white bg-opacity-20 text-white'}`}>
                                                     {isChallengeExpired(activeChallenge) ? 'Défi expiré' : `Valide encore ${getChallengeRemaining(activeChallenge)}`}
                                                 </span>
-                                                <span class={`inline-flex items-center rounded-full px-3 py-2 text-[11px] font-semibold ${isChallengeExpired(activeChallenge) ? 'bg-slate-200 text-slate-500' : 'bg-white bg-opacity-20 text-white'}`}>
-                                                    Créé le {new Date(activeChallenge.created_at).toLocaleDateString('fr-FR')}
-                                                </span>
                                             </div>
-                                            <div className={`mt-4 pt-4 border-t ${activeChallenge && !isChallengeExpired(activeChallenge) ? 'border-white border-opacity-20' : 'border-slate-200'} flex flex-col gap-3 md:flex-row md:items-center md:justify-between`}>
-                                                <span className={`text-xs ${activeChallenge && !isChallengeExpired(activeChallenge) ? 'text-white' : 'text-slate-500'}`}>Rapporte +100 pts (+25 pts par Super Like)</span>
-                                                <label className={`inline-flex items-center justify-center ${isChallengeExpired(activeChallenge) ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'} bg-yellow-400 hover:bg-yellow-300 text-slate-900 font-bold text-xs px-4 py-2 rounded-xl shadow transition transform active:scale-95`}>
-                                                    <i class="fa-solid fa-camera"></i>
-                                                    <span>Relever le défi</span>
-                                                    <input type="file" accept="image/*" onChange={handlePhotoUpload} class="hidden" disabled={isChallengeExpired(activeChallenge)} />
-                                                </label>
+                                            <div className={`mt-4 pt-4 border-t ${activeChallenge && !isChallengeExpired(activeChallenge) ? 'border-white border-opacity-20' : 'border-slate-200'} space-y-3`}>
+                                                <textarea
+                                                    value={submissionDescription}
+                                                    onChange={e => setSubmissionDescription(e.target.value)}
+                                                    placeholder="Ta description de réponse (facultatif)"
+                                                    class="w-full min-h-[90px] p-3 rounded-2xl border border-gray-200 bg-white text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-pink-300 transition"
+                                                    disabled={isChallengeExpired(activeChallenge)}
+                                                />
+                                                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                                                    <span className={`text-xs ${activeChallenge && !isChallengeExpired(activeChallenge) ? 'text-white' : 'text-slate-500'}`}>Rapporte +100 pts (+25 pts par Super Like)</span>
+                                                    <label className={`inline-flex items-center justify-center gap-2 ${isChallengeExpired(activeChallenge) ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'} bg-yellow-400 hover:bg-yellow-300 text-slate-900 font-bold text-xs px-4 py-2 rounded-xl shadow transition transform active:scale-95`}>
+                                                        <i class="fa-solid fa-camera"></i>
+                                                        <span>Relever le défi</span>
+                                                        <input type="file" accept="image/*" onChange={handlePhotoUpload} class="hidden" disabled={isChallengeExpired(activeChallenge)} />
+                                                    </label>
+                                                </div>
                                             </div>
                                         </>
                                     ) : (
@@ -863,9 +986,8 @@
                                                         <div>
                                                             <p class="font-bold text-gray-800 text-sm">{challenge.title}</p>
                                                             <p class="text-[11px] text-gray-500 mt-1">{challenge.description || 'Aucune description fournie.'}</p>
-                                                            <div class="mt-3 flex flex-wrap gap-2 text-[11px] text-gray-500">
+                                                                    <div class="mt-3 flex flex-wrap gap-2 text-[11px] text-gray-500">
                                                                 <span class="rounded-full bg-slate-100 px-2 py-1">{expired ? 'Expiré' : `Encore ${getChallengeRemaining(challenge)}`}</span>
-                                                                <span class="rounded-full bg-slate-100 px-2 py-1">Créé le {new Date(challenge.created_at).toLocaleDateString('fr-FR')}</span>
                                                             </div>
                                                         </div>
                                                         <button 
@@ -888,7 +1010,10 @@
                                                                         </div>
                                                                         <span class="text-[11px] text-slate-500">{sub.likes} SL</span>
                                                                     </div>
-                                                                    <div class="bg-slate-100 overflow-hidden">
+                                                                    {sub.description && (
+                                                                <p class="mt-3 text-sm text-gray-600">{sub.description}</p>
+                                                            )}
+                                                            <div class="bg-slate-100 overflow-hidden">
                                                                         <img src={sub.photo} alt="Preuve défi" class="w-full h-full object-contain max-h-[360px]" />
                                                                     </div>
                                                                 </div>
@@ -943,28 +1068,9 @@
                             </div>
                         )}
 
-                        {/* --- TAB COMPTE / PARTAGE --- */}
+                        {/* --- TAB COMPTE --- */}
                         {activeTab === "settings" && (
                             <div class="space-y-4">
-                                <div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
-                                    <h2 class="text-md font-bold text-gray-800 mb-2">Partager ce groupe</h2>
-                                    <p class="text-xs text-gray-500 mb-4 font-semibold">Donne ces identifiants à tes amis pour qu'ils rejoignent la tribu !</p>
-                                    
-                                    <div class="space-y-2 text-xs">
-                                        <div class="flex justify-between border-b pb-2">
-                                            <span class="text-gray-500">Identifiant Unique du groupe :</span>
-                                            <span class="font-black text-pink-600">{activeGroupObj.id}</span>
-                                        </div>
-                                        <div class="flex justify-between border-b pb-2">
-                                            <span class="text-gray-500">Mot de passe d'accès :</span>
-                                            <span class="font-bold text-gray-800">{activeGroupObj.password}</span>
-                                        </div>
-                                    </div>
-                                    <div class="mt-4 bg-yellow-50 text-yellow-800 p-3 rounded-xl text-[11px]">
-                                        📢 <strong>Méthode pour rejoindre :</strong> Tes potes n'ont qu'à ouvrir le site, cliquer sur le bouton <strong>+</strong> en haut à droite, puis rentrer l'Identifiant et le Mot de passe.
-                                    </div>
-                                </div>
-
                                 <div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 space-y-3">
                                     <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Ton compte</h3>
                                     <p class="text-xs text-gray-500">Modifie ton pseudo, ta photo de profil ou ton fuseau horaire.</p>
@@ -982,6 +1088,14 @@
                                             Créer un nouveau groupe
                                         </button>
                                     </div>
+                                    {currentGroup && (
+                                        <button 
+                                            onClick={handleLeaveGroup}
+                                            class="w-full py-3 bg-red-50 text-red-500 rounded-xl font-bold text-xs hover:bg-red-100 transition"
+                                        >
+                                            Quitter le groupe
+                                        </button>
+                                    )}
                                     <button 
                                         onClick={() => setShowDbSetup(true)}
                                         class="w-full py-3 bg-white text-blue-500 rounded-xl border border-blue-100 font-bold text-xs hover:bg-blue-50 transition"
@@ -989,74 +1103,84 @@
                                         Modifier la configuration Supabase URL / Clef
                                     </button>
                                 </div>
-
-                                <button 
-                                    onClick={() => {
-                                        localStorage.clear();
-                                        window.location.reload();
-                                    }}
-                                    class="w-full py-3 bg-red-50 text-red-500 rounded-xl font-bold text-xs hover:bg-red-100 transition"
-                                >
-                                    Se déconnecter (Reset complet de l'appareil)
-                                </button>
                             </div>
                         )}
                     </main>
 
                     {/* --- BARRE DE NAVIGATION DU BAS --- */}
-                    <nav class="absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 px-6 py-2 flex justify-between items-center z-10 shadow-lg">
-                        <button 
-                            onClick={() => setActiveTab("feed")} 
-                            class={`flex flex-col items-center space-y-1 ${activeTab === 'feed' ? 'text-pink-500' : 'text-gray-400'}`}
-                        >
-                            <i class="fa-solid fa-fire text-lg"></i>
-                            <span class="text-[10px] font-bold">Défis</span>
-                        </button>
-                        
-                        <button 
-                            onClick={() => setActiveTab("leaderboard")} 
-                            class={`flex flex-col items-center space-y-1 ${activeTab === 'leaderboard' ? 'text-pink-500' : 'text-gray-400'}`}
-                        >
-                            <i class="fa-solid fa-trophy text-lg"></i>
-                            <span class="text-[10px] font-bold">Classement</span>
-                        </button>
+                    <nav class="absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 px-6 py-2 z-10 shadow-lg">
+                        <div class="flex items-center justify-between max-w-lg mx-auto">
+                            <button 
+                                onClick={() => setActiveTab("feed")} 
+                                class={`flex flex-col items-center space-y-1 ${activeTab === 'feed' ? 'text-pink-500' : 'text-gray-400'} w-1/3`}
+                            >
+                                <i class="fa-solid fa-fire text-lg"></i>
+                                <span class="text-[10px] font-bold">Défis</span>
+                            </button>
 
-                        <button 
-                            onClick={() => setShowAddChallengeModal(true)} 
-                            title="Proposer un défi"
-                            class="w-12 h-12 rounded-full bg-gradient-to-tr from-pink-500 to-yellow-500 text-white flex items-center justify-center shadow-lg -translate-y-4 hover:opacity-90 transform active:scale-95 transition"
-                        >
-                            <i class="fa-solid fa-plus text-lg"></i>
-                        </button>
+                            <button 
+                                onClick={() => setShowAddChallengeModal(true)} 
+                                title="Proposer un défi"
+                                class="w-14 h-14 rounded-full bg-gradient-to-tr from-pink-500 to-yellow-500 text-white flex items-center justify-center shadow-lg hover:opacity-90 transform active:scale-95 transition"
+                            >
+                                <i class="fa-solid fa-plus text-lg"></i>
+                            </button>
 
-                        <button 
-                            onClick={() => setActiveTab("settings")} 
-                            class={`flex flex-col items-center space-y-1 ${activeTab === 'settings' ? 'text-pink-500' : 'text-gray-400'}`}
-                        >
-                            <i class="fa-solid fa-share-nodes text-lg"></i>
-                            <span class="text-[10px] font-bold">Partager</span>
-                        </button>
+                            <button 
+                                onClick={() => setActiveTab("leaderboard")} 
+                                class={`flex flex-col items-center space-y-1 ${activeTab === 'leaderboard' ? 'text-pink-500' : 'text-gray-400'} w-1/3`}
+                            >
+                                <i class="fa-solid fa-trophy text-lg"></i>
+                                <span class="text-[10px] font-bold">Classement</span>
+                            </button>
+                            <button 
+                                onClick={() => setActiveTab("settings")} 
+                                class={`flex flex-col items-center space-y-1 ${activeTab === 'settings' ? 'text-pink-500' : 'text-gray-400'} w-1/3`}
+                            >
+                                <i class="fa-solid fa-gear text-lg"></i>
+                                <span class="text-[10px] font-bold">Paramètres</span>
+                            </button>
+                        </div>
                     </nav>
 
-                    {/* --- MODAL REJOINDRE GROUPE --- */}
-                    {showJoinModal && (
+                    {/* --- MODAL GESTION DE GROUPE --- */}
+                    {showGroupActionModal && (
                         <div class="absolute inset-0 bg-slate-950 bg-opacity-60 flex items-center justify-center z-50 p-4">
-                            <div class="bg-white rounded-2xl p-6 w-full max-w-sm space-y-4">
+                            <div class="bg-white rounded-2xl p-6 w-full max-w-2xl space-y-4">
                                 <div class="flex justify-between items-center">
-                                    <h3 class="font-bold text-gray-800 text-lg">Rejoindre un groupe</h3>
-                                    <button onClick={() => setShowJoinModal(false)} class="text-gray-400 hover:text-gray-600"><i class="fa-solid fa-xmark"></i></button>
+                                    <h3 class="font-bold text-gray-800 text-lg">Rejoindre ou créer un groupe</h3>
+                                    <button onClick={() => setShowGroupActionModal(false)} class="text-gray-400 hover:text-gray-600"><i class="fa-solid fa-xmark"></i></button>
                                 </div>
-                                <form onSubmit={handleJoinGroup} class="space-y-3">
-                                    <div>
-                                        <label class="block text-xs text-gray-400 mb-1">Identifiant Unique du groupe</label>
-                                        <input type="text" value={joinName} onChange={e => setJoinName(e.target.value)} placeholder="Ex: les-évadés" class="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-pink-300 outline-none text-sm" required />
+                                <div class="grid gap-4 grid-cols-1">
+                                    <div class="bg-slate-50 rounded-3xl p-5 border border-gray-100">
+                                        <h4 class="text-sm font-bold text-gray-700 mb-3">Rejoindre un groupe</h4>
+                                        <form onSubmit={(e) => { setShowGroupActionModal(false); handleJoinGroup(e); }} class="space-y-3">
+                                            <div>
+                                                <label class="block text-xs text-gray-400 mb-1">Identifiant du groupe</label>
+                                                <input type="text" value={joinName} onChange={e => setJoinName(e.target.value)} placeholder="Ex: les-évadés" class="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-pink-300 outline-none text-sm" required />
+                                            </div>
+                                            <div>
+                                                <label class="block text-xs text-gray-400 mb-1">Mot de passe du groupe</label>
+                                                <input type="password" value={joinPassword} onChange={e => setJoinPassword(e.target.value)} class="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-pink-300 outline-none text-sm" required />
+                                            </div>
+                                            <button type="submit" class="w-full py-2.5 bg-pink-500 text-white font-bold text-sm rounded-xl">Rejoindre</button>
+                                        </form>
                                     </div>
-                                    <div>
-                                        <label class="block text-xs text-gray-400 mb-1">Mot de passe du groupe</label>
-                                        <input type="password" value={joinPassword} onChange={e => setJoinPassword(e.target.value)} class="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-pink-300 outline-none text-sm" required />
+                                    <div class="bg-slate-50 rounded-3xl p-5 border border-gray-100">
+                                        <h4 class="text-sm font-bold text-gray-700 mb-3">Créer un groupe</h4>
+                                        <form onSubmit={(e) => { setShowGroupActionModal(false); handleCreateGroup(e); }} class="space-y-3">
+                                            <div>
+                                                <label class="block text-xs text-gray-400 mb-1">Nom du groupe</label>
+                                                <input type="text" value={newGroupName} onChange={e => setNewGroupName(e.target.value)} placeholder="Ex: Les Évadés" class="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-pink-300 outline-none text-sm" required />
+                                            </div>
+                                            <div>
+                                                <label class="block text-xs text-gray-400 mb-1">Mot de passe d'accès</label>
+                                                <input type="password" value={newGroupPass} onChange={e => setNewGroupPass(e.target.value)} placeholder="Sélectionne un code d'accès" class="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-pink-300 outline-none text-sm" required />
+                                            </div>
+                                            <button type="submit" class="w-full py-2.5 bg-slate-900 text-white font-bold text-sm rounded-xl">Créer un groupe</button>
+                                        </form>
                                     </div>
-                                    <button type="submit" class="w-full py-2.5 bg-pink-500 text-white font-bold text-sm rounded-xl">Rejoindre la tribu</button>
-                                </form>
+                                </div>
                             </div>
                         </div>
                     )}
@@ -1124,6 +1248,17 @@
                                         </select>
                                     </div>
                                     <button type="submit" class="w-full py-2.5 bg-pink-500 text-white font-bold text-sm rounded-xl">Enregistrer les changements</button>
+                                    <button 
+                                        type="button"
+                                        onClick={() => {
+                                            localStorage.removeItem('squad_current_user');
+                                            localStorage.removeItem('squad_active_group_id');
+                                            window.location.reload();
+                                        }}
+                                        class="w-full py-2.5 bg-red-50 text-red-500 font-bold text-sm rounded-xl border border-red-100 hover:bg-red-100 transition"
+                                    >
+                                        Se déconnecter
+                                    </button>
                                 </form>
                             </div>
                         </div>
