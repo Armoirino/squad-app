@@ -44,6 +44,12 @@
     <script type="text/babel">
         const { useState, useEffect, useCallback } = React;
 
+        // --- ASSISTANCE URL PARAMETERS (Bulletproof fallback) ---
+        const getQueryParam = (name) => {
+            const urlParams = new URLSearchParams(window.location.search);
+            return urlParams.get(name);
+        };
+
         const DEFAULT_SUPABASE_URL = ""; 
         const DEFAULT_SUPABASE_KEY = "";
 
@@ -80,9 +86,28 @@
         };
 
         function App() {
-            // Configuration Supabase
-            const [sbUrl, setSbUrl] = useState(() => localStorage.getItem('squad_sb_url') || DEFAULT_SUPABASE_URL);
-            const [sbKey, setSbKey] = useState(() => localStorage.getItem('squad_sb_key') || DEFAULT_SUPABASE_KEY);
+            // Lecture sécurisée de la mémoire locale avec try-catch pour parer les restrictions des navigateurs
+            const safeGetLocalStorage = (key, fallback) => {
+                try {
+                    return localStorage.getItem(key) || fallback;
+                } catch (e) {
+                    console.warn("Le stockage local est bloqué par votre navigateur.");
+                    return fallback;
+                }
+            };
+
+            const safeSetLocalStorage = (key, value) => {
+                try {
+                    localStorage.setItem(key, value);
+                    return true;
+                } catch (e) {
+                    return false;
+                }
+            };
+
+            // Récupération depuis URL ou localStorage
+            const [sbUrl, setSbUrl] = useState(() => getQueryParam('sb_url') || safeGetLocalStorage('squad_sb_url', DEFAULT_SUPABASE_URL));
+            const [sbKey, setSbKey] = useState(() => getQueryParam('sb_key') || safeGetLocalStorage('squad_sb_key', DEFAULT_SUPABASE_KEY));
             const [supabaseClient, setSupabaseClient] = useState(null);
 
             // Données de l'appli
@@ -91,16 +116,24 @@
             const [challenges, setChallenges] = useState([]);
             const [submissions, setSubmissions] = useState([]);
             
-            const [currentUser, setCurrentUser] = useState(() => JSON.parse(localStorage.getItem('squad_current_user')) || null);
-            const [currentGroup, setCurrentGroup] = useState(() => localStorage.getItem('squad_active_group_id') || "");
+            const [currentUser, setCurrentUser] = useState(() => {
+                try {
+                    const saved = localStorage.getItem('squad_current_user');
+                    return saved ? JSON.parse(saved) : null;
+                } catch(e) {
+                    return null;
+                }
+            });
+            const [currentGroup, setCurrentGroup] = useState(() => safeGetLocalStorage('squad_active_group_id', ""));
             
-            // UI
+            // États UI
             const [activeTab, setActiveTab] = useState("feed");
             const [showJoinModal, setShowJoinModal] = useState(false);
             const [showCreateModal, setShowCreateModal] = useState(false);
             const [showAddChallengeModal, setShowAddChallengeModal] = useState(false);
-            const [showDbSetup, setShowDbSetup] = useState(false);
+            const [showDbSetup, setShowDbSetup] = useState(!sbUrl || !sbKey);
             const [isLoading, setIsLoading] = useState(false);
+            const [connectionTestStatus, setConnectionTestStatus] = useState({ tested: false, success: false, message: "" });
 
             // Formulaires
             const [joinName, setJoinName] = useState("");
@@ -121,8 +154,11 @@
                     try {
                         const client = supabase.createClient(sbUrl, sbKey);
                         setSupabaseClient(client);
+                        // Tenter de sauvegarder localement
+                        safeSetLocalStorage('squad_sb_url', sbUrl);
+                        safeSetLocalStorage('squad_sb_key', sbKey);
                     } catch (e) {
-                        console.error("Erreur de connexion Supabase:", e);
+                        console.error("Erreur d'initialisation Supabase:", e);
                     }
                 }
             }, [sbUrl, sbKey]);
@@ -146,62 +182,68 @@
                 }
             };
 
-            // --- CHARGER TOUTES LES DONNÉES DEPUIS SUPABASE (AVEC GESTION DES ERREURS) ---
+            // --- CHARGER TOUTES LES DONNÉES DEPUIS SUPABASE (AVEC GESTION DES ERREURS PROPRES) ---
             const loadData = useCallback(async () => {
                 if (!supabaseClient) return;
                 setIsLoading(true);
                 try {
                     // 1. Charger les groupes
-                    const { data: grps } = await supabaseClient
+                    const { data: grps, error: grpsErr } = await supabaseClient
                         .from('groups')
-                        .select('*')
-                        .throwOnError();
+                        .select('*');
+                    
+                    if (grpsErr) throw grpsErr;
                     setGroups(grps || []);
 
                     if (grps && grps.length > 0) {
                         const activeId = currentGroup || grps[0].id;
                         if (!currentGroup) {
                             setCurrentGroup(activeId);
-                            localStorage.setItem('squad_active_group_id', activeId);
+                            safeSetLocalStorage('squad_active_group_id', activeId);
                         }
 
                         // 2. Charger membres du groupe actif
-                        const { data: mems } = await supabaseClient
+                        const { data: mems, error: memsErr } = await supabaseClient
                             .from('group_members')
                             .select('points, profiles(id, name, city, timezone)')
-                            .eq('group_id', activeId)
-                            .throwOnError();
+                            .eq('group_id', activeId);
 
-                        const formattedMems = (mems || []).map(m => ({
-                            id: m.profiles.id,
-                            name: m.profiles.name,
-                            city: m.profiles.city,
-                            timezone: m.profiles.timezone,
-                            points: m.points
-                        }));
+                        if (memsErr) throw memsErr;
+
+                        const formattedMems = (mems || [])
+                            .filter(m => m.profiles)
+                            .map(m => ({
+                                id: m.profiles.id,
+                                name: m.profiles.name,
+                                city: m.profiles.city,
+                                timezone: m.profiles.timezone,
+                                points: m.points
+                            }));
                         setMembers(formattedMems);
 
                         // 3. Charger défis du groupe actif
-                        const { data: challs } = await supabaseClient
+                        const { data: challs, error: challsErr } = await supabaseClient
                             .from('challenges')
                             .select('*')
                             .eq('group_id', activeId)
-                            .order('created_at', { ascending: false })
-                            .throwOnError();
+                            .order('created_at', { ascending: false });
+                        
+                        if (challsErr) throw challsErr;
                         setChallenges(challs || []);
 
                         // 4. Charger soumissions
-                        const { data: subs } = await supabaseClient
+                        const { data: subs, error: subsErr } = await supabaseClient
                             .from('submissions')
                             .select('*')
                             .eq('group_id', activeId)
-                            .order('created_at', { ascending: false })
-                            .throwOnError();
+                            .order('created_at', { ascending: false });
+
+                        if (subsErr) throw subsErr;
                         setSubmissions(subs || []);
                     }
                 } catch (error) {
-                    console.error("Erreur de chargement des données Supabase :", error);
-                    alert("⚠️ Erreur lors du chargement des données :\n" + error.message);
+                    console.error("Erreur globale Supabase :", error);
+                    alert("⚠️ Erreur d'accès à la base de données :\n" + error.message + "\n\nAssurez-vous d'avoir bien exécuté le script SQL dans votre console Supabase.");
                 } finally {
                     setIsLoading(false);
                 }
@@ -216,7 +258,7 @@
             // Sauvegarder l'ID de groupe actif en local
             const handleGroupChange = (groupId) => {
                 setCurrentGroup(groupId);
-                localStorage.setItem('squad_active_group_id', groupId);
+                safeSetLocalStorage('squad_active_group_id', groupId);
             };
 
             // --- INSCRIPTION UTILISATEUR ---
@@ -235,24 +277,27 @@
                 setIsLoading(true);
                 try {
                     // Insérer dans profils Supabase
-                    await supabaseClient
+                    const { error } = await supabaseClient
                         .from('profiles')
-                        .insert([newUser])
-                        .throwOnError();
+                        .insert([newUser]);
+
+                    if (error) throw error;
 
                     setCurrentUser(newUser);
-                    localStorage.setItem('squad_current_user', JSON.stringify(newUser));
+                    try {
+                        localStorage.setItem('squad_current_user', JSON.stringify(newUser));
+                    } catch(e) {}
 
                     // L'associer au groupe actif s'il y en a un
                     if (currentGroup) {
-                        await supabaseClient
+                        const { error: joinErr } = await supabaseClient
                             .from('group_members')
                             .insert([{
                                 group_id: currentGroup,
                                 profile_id: userId,
                                 points: 0
-                            }])
-                            .throwOnError();
+                            }]);
+                        if (joinErr) throw joinErr;
                         await loadData();
                     }
                 } catch (error) {
@@ -269,28 +314,29 @@
 
                 setIsLoading(true);
                 try {
-                    const { data } = await supabaseClient
+                    const { data, error } = await supabaseClient
                         .from('groups')
                         .select('*')
                         .eq('id', joinName.toLowerCase().trim())
-                        .single()
-                        .throwOnError();
+                        .single();
+
+                    if (error) throw new Error("Groupe introuvable. Vérifie l'orthographe !");
 
                     if (data && data.password === joinPassword) {
                         setCurrentGroup(data.id);
-                        localStorage.setItem('squad_active_group_id', data.id);
+                        safeSetLocalStorage('squad_active_group_id', data.id);
                         setShowJoinModal(false);
 
                         // Ajouter l'utilisateur aux membres du groupe
                         if (currentUser) {
-                            await supabaseClient
+                            const { error: memberError } = await supabaseClient
                                 .from('group_members')
                                 .upsert([{
                                     group_id: data.id,
                                     profile_id: currentUser.id,
                                     points: 0
-                                }])
-                                .throwOnError();
+                                }]);
+                            if (memberError) throw memberError;
                         }
                         await loadData();
                         alert(`Bienvenue dans le groupe : ${data.name} !`);
@@ -313,29 +359,30 @@
                 setIsLoading(true);
                 try {
                     // Créer le groupe
-                    await supabaseClient
+                    const { error: groupErr } = await supabaseClient
                         .from('groups')
                         .insert([{
                             id: newId,
                             name: newGroupName,
                             password: newGroupPass
-                        }])
-                        .throwOnError();
+                        }]);
+
+                    if (groupErr) throw groupErr;
 
                     // Associer le créateur
                     if (currentUser) {
-                        await supabaseClient
+                        const { error: memberErr } = await supabaseClient
                             .from('group_members')
                             .insert([{
                                 group_id: newId,
                                 profile_id: currentUser.id,
                                 points: 0
-                            }])
-                            .throwOnError();
+                            }]);
+                        if (memberErr) throw memberErr;
                     }
 
                     // Créer un premier défi par défaut
-                    await supabaseClient
+                    const { error: challengeErr } = await supabaseClient
                         .from('challenges')
                         .insert([{
                             id: 'c_' + Date.now(),
@@ -343,11 +390,11 @@
                             title: "Prendre un café en terrasse ☕",
                             description: "Partage ton meilleur spot !",
                             status: "active"
-                        }])
-                        .throwOnError();
+                        }]);
+                    if (challengeErr) throw challengeErr;
 
                     setCurrentGroup(newId);
-                    localStorage.setItem('squad_active_group_id', newId);
+                    safeSetLocalStorage('squad_active_group_id', newId);
                     setShowCreateModal(false);
                     await loadData();
                     alert(`Groupe "${newGroupName}" créé !`);
@@ -369,16 +416,16 @@
                     if (challenges.length > 0) {
                         const activeId = challenges.find(c => c.status === "active")?.id;
                         if (activeId) {
-                            await supabaseClient
+                            const { error: updateErr } = await supabaseClient
                                 .from('challenges')
                                 .update({ status: 'past' })
-                                .eq('id', activeId)
-                                .throwOnError();
+                                .eq('id', activeId);
+                            if (updateErr) throw updateErr;
                         }
                     }
 
                     // Insérer le nouveau défi
-                    await supabaseClient
+                    const { error: insertErr } = await supabaseClient
                         .from('challenges')
                         .insert([{
                             id: 'c_' + Date.now(),
@@ -386,8 +433,9 @@
                             title: newChallengeTitle,
                             description: newChallengeDesc,
                             status: "active"
-                        }])
-                        .throwOnError();
+                        }]);
+
+                    if (insertErr) throw insertErr;
 
                     setShowAddChallengeModal(false);
                     setNewChallengeTitle("");
@@ -431,21 +479,23 @@
                         };
 
                         // Sauvegarde dans Supabase
-                        await supabaseClient
+                        const { error: subErr } = await supabaseClient
                             .from('submissions')
-                            .insert([newSub])
-                            .throwOnError();
+                            .insert([newSub]);
+
+                        if (subErr) throw subErr;
 
                         // Ajout de +50 points au joueur
                         const memberInfo = members.find(m => m.id === currentUser.id);
                         const currentPoints = memberInfo ? memberInfo.points : 0;
 
-                        await supabaseClient
+                        const { error: ptsErr } = await supabaseClient
                             .from('group_members')
                             .update({ points: currentPoints + 50 })
                             .eq('group_id', currentGroup)
-                            .eq('profile_id', currentUser.id)
-                            .throwOnError();
+                            .eq('profile_id', currentUser.id);
+
+                        if (ptsErr) throw ptsErr;
 
                         alert("Défi relevé ! +50 points ! 🎉");
                         await loadData();
@@ -458,20 +508,57 @@
                 reader.readAsDataURL(file);
             };
 
-            // --- CONFIGURER SUPABASE DEPUIS L'ÉCRAN ---
+            // --- TESTER LA CONNEXION À LA BASE DE DONNÉES EN DIRECT ---
+            const testSupabaseConnection = async (urlToTest, keyToTest) => {
+                setConnectionTestStatus({ tested: true, success: false, message: "Connexion en cours..." });
+                
+                let cleanUrl = urlToTest.trim();
+                if (cleanUrl.endsWith('/')) cleanUrl = cleanUrl.slice(0, -1);
+                if (cleanUrl.endsWith('/rest/v1')) cleanUrl = cleanUrl.replace('/rest/v1', '');
+
+                try {
+                    const testClient = supabase.createClient(cleanUrl, keyToTest.trim());
+                    // On tente de lire une ligne de la table groups pour vérifier l'accès
+                    const { data, error } = await testClient.from('groups').select('*').limit(1);
+                    
+                    if (error) {
+                        // Si le problème vient du script SQL manquant
+                        if (error.code === 'PGRST116' || error.message.includes('relation "groups" does not exist')) {
+                            setConnectionTestStatus({
+                                tested: true,
+                                success: false,
+                                message: "⚠️ Identifiants OK, mais le script SQL n'a pas été lancé dans Supabase !"
+                            });
+                        } else {
+                            throw error;
+                        }
+                    } else {
+                        setConnectionTestStatus({
+                            tested: true,
+                            success: true,
+                            message: "✅ Connexion établie avec succès !"
+                        });
+                        // Sauvegarde immédiate
+                        safeSetLocalStorage('squad_sb_url', cleanUrl);
+                        safeSetLocalStorage('squad_sb_key', keyToTest.trim());
+                    }
+                } catch (err) {
+                    setConnectionTestStatus({
+                        tested: true,
+                        success: false,
+                        message: "❌ Erreur : " + err.message
+                    });
+                }
+            };
+
             const handleSetupDb = (e) => {
                 e.preventDefault();
-                // Nettoyage de l'URL pour supprimer le slash final de rest/v1/
                 let cleanUrl = sbUrl.trim();
-                if (cleanUrl.endsWith('/')) {
-                    cleanUrl = cleanUrl.slice(0, -1);
-                }
-                if (cleanUrl.endsWith('/rest/v1')) {
-                    cleanUrl = cleanUrl.replace('/rest/v1', '');
-                }
+                if (cleanUrl.endsWith('/')) cleanUrl = cleanUrl.slice(0, -1);
+                if (cleanUrl.endsWith('/rest/v1')) cleanUrl = cleanUrl.replace('/rest/v1', '');
 
-                localStorage.setItem('squad_sb_url', cleanUrl);
-                localStorage.setItem('squad_sb_key', sbKey.trim());
+                safeSetLocalStorage('squad_sb_url', cleanUrl);
+                safeSetLocalStorage('squad_sb_key', sbKey.trim());
                 setShowDbSetup(false);
                 window.location.reload();
             };
@@ -503,22 +590,24 @@
                     const updatedLikesCount = (submission.likes || 0) + 1;
 
                     // Mettre à jour les likes sur la photo
-                    await supabaseClient
+                    const { error: likeErr } = await supabaseClient
                         .from('submissions')
                         .update({ likes: updatedLikesCount, liked_by: updatedLikedBy })
-                        .eq('id', subId)
-                        .throwOnError();
+                        .eq('id', subId);
+
+                    if (likeErr) throw likeErr;
 
                     // Trouver les points actuels du joueur liké pour lui ajouter +15 points
                     const creatorMember = members.find(m => m.id === submission.user_id);
                     const creatorPoints = creatorMember ? creatorMember.points : 0;
 
-                    await supabaseClient
+                    const { error: creatorErr } = await supabaseClient
                         .from('group_members')
                         .update({ points: creatorPoints + 15 })
                         .eq('group_id', currentGroup)
-                        .eq('profile_id', submission.user_id)
-                        .throwOnError();
+                        .eq('profile_id', submission.user_id);
+
+                    if (creatorErr) throw creatorErr;
 
                     alert("Super Like envoyé ! Ton pote gagne +15 points ! 🚀");
                     await loadData();
@@ -532,14 +621,17 @@
             const activeGroupObj = groups.find(g => g.id === currentGroup) || { name: "SquadApp" };
             const activeChallenge = challenges.find(c => c.status === "active");
 
+            // URL magique de partage avec les identifiants préremplis en paramètre
+            const shareableLink = window.location.origin + window.location.pathname + `?sb_url=${encodeURIComponent(sbUrl)}&sb_key=${encodeURIComponent(sbKey)}`;
+
             // --- ÉCRAN 1 : CONFIGURATION BASE DE DONNÉES SI ABSENTE ---
             if (!sbUrl || !sbKey || showDbSetup) {
                 return (
                     <div class="p-6 flex flex-col justify-center items-center min-h-[600px] flex-grow bg-white">
-                        <div class="text-center mb-6">
+                        <div class="text-center mb-4">
                             <span class="text-5xl">⚡</span>
                             <h1 class="text-2xl font-bold text-gray-800 mt-2">Connecte ta base de données</h1>
-                            <p class="text-sm text-gray-500 mt-2">Colle ici tes identifiants Supabase gratuits pour que tes amis puissent jouer avec toi en temps réel.</p>
+                            <p class="text-xs text-gray-400 mt-2 leading-relaxed">Saisis tes identifiants Supabase ci-dessous. Ils seront mémorisés sur ton navigateur.</p>
                         </div>
 
                         <form onSubmit={handleSetupDb} class="w-full space-y-4">
@@ -550,7 +642,7 @@
                                     value={sbUrl} 
                                     onChange={e => setSbUrl(e.target.value)} 
                                     placeholder="https://xxxxxx.supabase.co" 
-                                    class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-pink-300 outline-none"
+                                    class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-pink-300 outline-none text-sm"
                                     required 
                                 />
                             </div>
@@ -561,15 +653,45 @@
                                     type="password" 
                                     value={sbKey} 
                                     onChange={e => setSbKey(e.target.value)} 
-                                    placeholder="sb_publishable_..." 
-                                    class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-pink-300 outline-none"
+                                    placeholder="sb_publishable_... ou eyJ..." 
+                                    class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-pink-300 outline-none text-sm"
                                     required 
                                 />
                             </div>
 
-                            <button type="submit" class="w-full py-3 bg-gradient-to-r from-pink-500 to-yellow-500 text-white rounded-xl font-bold shadow-lg">
-                                Connecter ma Base de Données 🔌
-                            </button>
+                            {/* Bouton de test en direct */}
+                            <div class="flex space-x-2">
+                                <button 
+                                    type="button" 
+                                    onClick={() => testSupabaseConnection(sbUrl, sbKey)}
+                                    class="flex-1 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-bold text-xs transition"
+                                >
+                                    Tester la Connexion 🔌
+                                </button>
+                                
+                                <button 
+                                    type="submit" 
+                                    class="flex-1 py-2.5 bg-gradient-to-r from-pink-500 to-yellow-500 text-white rounded-xl font-bold text-xs shadow"
+                                >
+                                    Enregistrer & Ouvrir 🚀
+                                </button>
+                            </div>
+
+                            {/* Statut du test de connexion */}
+                            {connectionTestStatus.tested && (
+                                <div class={`p-3 rounded-xl text-xs font-medium ${
+                                    connectionTestStatus.success ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'
+                                }`}>
+                                    {connectionTestStatus.message}
+                                </div>
+                            )}
+
+                            {/* Conseils pour débutants */}
+                            <div class="bg-blue-50 border border-blue-100 p-4 rounded-xl text-[11px] text-blue-800 leading-relaxed">
+                                <i class="fa-solid fa-circle-info mr-1"></i>
+                                <strong>Conseil :</strong> Si la configuration ne reste pas enregistrée d'un rafraîchissement à l'autre, c'est que vous utilisez le navigateur interne d'une application (WhatsApp, Discord). 
+                                <span class="block mt-1 font-semibold">👉 Touchez les trois petits points en haut à droite de votre écran et choisissez "Ouvrir dans Chrome / Safari".</span>
+                            </div>
                         </form>
                     </div>
                 );
@@ -613,7 +735,7 @@
                             </div>
 
                             <div>
-                                <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Fuseau horaire</label>
+                                <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Fuseau horaire détecté</label>
                                 <input 
                                     type="text" 
                                     value={regTimezone} 
@@ -842,8 +964,10 @@
                                             <span class="font-bold text-gray-800">{activeGroupObj.password}</span>
                                         </div>
                                     </div>
-                                    <div class="mt-4 bg-yellow-50 text-yellow-800 p-3 rounded-xl text-[11px]">
-                                        📢 <strong>Méthode pour rejoindre :</strong> Tes potes n'ont qu'à ouvrir le site, cliquer sur le bouton <strong>+</strong> en haut à droite, puis rentrer l'Identifiant et le Mot de passe.
+                                    <div class="mt-4 bg-yellow-50 text-yellow-800 p-3 rounded-xl text-[11px] leading-relaxed">
+                                        📢 <strong>Lien magique pour rejoindre :</strong> Envoie ce lien à tes amis pour qu'ils soient connectés au même serveur automatiquement sans avoir à le configurer :
+                                        <textarea readonly onClick={(e) => e.target.select()} class="w-full mt-2 p-2 rounded bg-white border text-[10px] font-mono select-all h-20 outline-none text-slate-600 leading-tight" value={shareableLink}></textarea>
+                                        <span class="block mt-1 font-bold text-pink-600">💡 Touche le champ pour tout sélectionner et copier !</span>
                                     </div>
                                 </div>
 
@@ -860,7 +984,7 @@
 
                                 <button 
                                     onClick={() => {
-                                        localStorage.clear();
+                                        try { localStorage.clear(); } catch(e){}
                                         window.location.reload();
                                     }}
                                     class="w-full py-3 bg-red-50 text-red-500 rounded-xl font-bold text-xs hover:bg-red-100 transition"
@@ -984,3 +1108,19 @@
     </script>
 </body>
 </html>
+```
+eof
+
+---
+
+### 🚀 Comment tester et débloquer ta situation en 3 étapes :
+
+1. **Mets à jour ton code :** Copie ce nouveau code dans le fichier `index.html` de ton dépôt GitHub, enregistre et valide (Commit).
+2. **Utilise l'URL magique (Bulletproof Option) :**
+   Une fois que Vercel a fini la mise à jour (compte 10 secondes), ouvre ton application de cette manière dans ton navigateur (remplace par ton URL et ta clé) :
+   ```text
+   https://squad-app-inky.vercel.app/?sb_url=https://wbwscspbsmtbomewnpel.supabase.co&sb_key=sb_publishable_CdB_HF_gKiO9QV74UI2MmA_gMGwxvJJ
+   ```
+   *Grâce à cette technique, le site va forcer le chargement de tes identifiants même si la mémoire de ton navigateur est désactivée ou réinitialisée !*
+3. **Fais un test de connexion sur l'écran :**
+   Si l'écran de configuration s'affiche, appuie sur le nouveau bouton **"Tester la Connexion 🔌"**. Si le message indique un succès, tu peux continuer ! S'il affiche une erreur (ex: *Script SQL manquant*), tu sauras exactement ce qu'il faut régler sur Supabase.
