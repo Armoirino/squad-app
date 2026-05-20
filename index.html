@@ -1,23 +1,23 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-    <link rel="manifest" href="manifest.json">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SquadApp - Défis entre Potes</title>
-    <!-- Tailwind CSS pour un design moderne et responsive -->
+    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Icônes FontAwesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <!-- Google Fonts pour un look moderne et chaleureux -->
+    <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Comfortaa:wght@500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     
-    <!-- React & Babel CDN pour faire tourner l'application sans build -->
+    <!-- React, Babel & Supabase CDN -->
     <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
     <style>
         body {
@@ -28,7 +28,6 @@
         h1, h2, .brand-font {
             font-family: 'Comfortaa', display;
         }
-        /* Style pour masquer la scrollbar mais garder le défilement */
         .no-scrollbar::-webkit-scrollbar {
             display: none;
         }
@@ -40,65 +39,72 @@
 </head>
 <body class="bg-gray-50 flex justify-center items-start md:items-center py-0 md:py-8">
 
-    <!-- Container principal simulant un téléphone portable sur PC -->
     <div id="root" class="w-full max-w-md bg-white min-h-screen md:min-h-[850px] md:max-h-[850px] md:rounded-3xl md:shadow-2xl overflow-hidden flex flex-col border border-pink-100 relative"></div>
 
     <script type="text/babel">
-        const { useState, useEffect } = React;
+        const { useState, useEffect, useCallback } = React;
 
-        // --- DONNÉES DE DÉPART PAR DÉFAUT SI VIDE ---
-        const DEFAULT_GROUPS = [
-            { id: "world-tour", name: "Les Aventuriers 🌍", password: "123" },
-            { id: "family", name: "La Famille ❤️", password: "mama" }
-        ];
+        // --- CONFIGURATION SUPABASE ---
+        // Tu peux modifier ces valeurs directement ici OU les configurer directement dans l'application sur ton écran !
+        const DEFAULT_SUPABASE_URL = ""; 
+        const DEFAULT_SUPABASE_KEY = "";
 
-        const DEFAULT_MEMBERS = {
-            "world-tour": [
-                { id: "1", name: "Alexandre", city: "Tokyo", timezone: "Asia/Tokyo", points: 120 },
-                { id: "2", name: "Léa", city: "Paris", timezone: "Europe/Paris", points: 85 },
-                { id: "3", name: "Thomas", city: "Montréal", timezone: "America/Montreal", points: 95 }
-            ],
-            "family": [
-                { id: "4", name: "Maman", city: "Lyon", timezone: "Europe/Paris", points: 210 },
-                { id: "5", name: "Papa", city: "Lyon", timezone: "Europe/Paris", points: 150 }
-            ]
-        };
+        // --- FONCTION DE COMPRESSION D'IMAGE (Pour éviter de saturer la base de données) ---
+        const compressImage = (base64Str) => {
+            return new Promise((resolve) => {
+                const img = new Image();
+                img.src = base64Str;
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    const MAX_WIDTH = 500;
+                    const MAX_HEIGHT = 500;
+                    let width = img.width;
+                    let height = img.height;
 
-        const DEFAULT_CHALLENGES = {
-            "world-tour": [
-                { id: "c1", title: "Manger un plat ultra épicé 🌶️", description: "Prends-toi en photo en train de souffrir !", status: "active" }
-            ],
-            "family": [
-                { id: "c2", title: "Cuisiner une nouvelle recette 🍕", description: "Pas le droit aux pâtes au beurre !", status: "active" }
-            ]
-        };
-
-        const DEFAULT_SUBMISSIONS = {
-            "world-tour": [
-                { id: "s1", challengeId: "c1", userId: "1", userName: "Alexandre", userCity: "Tokyo", userTimezone: "Asia/Tokyo", photo: "https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?w=500&auto=format&fit=crop", likes: 2 },
-                { id: "s2", challengeId: "c1", userId: "3", userName: "Thomas", userCity: "Montréal", userTimezone: "America/Montreal", photo: "https://images.unsplash.com/photo-1559181567-c3190ca9959b?w=500&auto=format&fit=crop", likes: 1 }
-            ],
-            "family": []
+                    if (width > height) {
+                        if (width > MAX_WIDTH) {
+                            height *= MAX_WIDTH / width;
+                            width = MAX_WIDTH;
+                        }
+                    } else {
+                        if (height > MAX_HEIGHT) {
+                            width *= MAX_HEIGHT / height;
+                            height = MAX_HEIGHT;
+                        }
+                    }
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+                    resolve(canvas.toDataURL('image/jpeg', 0.6)); // Compresse à 60% de qualité
+                };
+            });
         };
 
         function App() {
-            // --- ÉTATS DE L'APPLICATION ---
-            const [groups, setGroups] = useState(() => JSON.parse(localStorage.getItem('squad_groups')) || DEFAULT_GROUPS);
-            const [members, setMembers] = useState(() => JSON.parse(localStorage.getItem('squad_members')) || DEFAULT_MEMBERS);
-            const [challenges, setChallenges] = useState(() => JSON.parse(localStorage.getItem('squad_challenges')) || DEFAULT_CHALLENGES);
-            const [submissions, setSubmissions] = useState(() => JSON.parse(localStorage.getItem('squad_submissions')) || DEFAULT_SUBMISSIONS);
+            // Configuration Supabase dynamique
+            const [sbUrl, setSbUrl] = useState(() => localStorage.getItem('squad_sb_url') || DEFAULT_SUPABASE_URL);
+            const [sbKey, setSbKey] = useState(() => localStorage.getItem('squad_sb_key') || DEFAULT_SUPABASE_KEY);
+            const [supabaseClient, setSupabaseClient] = useState(null);
+
+            // Données de l'appli
+            const [groups, setGroups] = useState([]);
+            const [members, setMembers] = useState([]);
+            const [challenges, setChallenges] = useState([]);
+            const [submissions, setSubmissions] = useState([]);
             
-            // Session utilisateur local
             const [currentUser, setCurrentUser] = useState(() => JSON.parse(localStorage.getItem('squad_current_user')) || null);
-            const [currentGroup, setCurrentGroup] = useState(() => localStorage.getItem('squad_active_group_id') || "world-tour");
+            const [currentGroup, setCurrentGroup] = useState(() => localStorage.getItem('squad_active_group_id') || "");
             
-            // États d'affichage & Formulaires
-            const [activeTab, setActiveTab] = useState("feed"); // feed, leaderboard, settings
+            // UI
+            const [activeTab, setActiveTab] = useState("feed");
             const [showJoinModal, setShowJoinModal] = useState(false);
             const [showCreateModal, setShowCreateModal] = useState(false);
             const [showAddChallengeModal, setShowAddChallengeModal] = useState(false);
-            
-            // Inputs formulaires
+            const [showDbSetup, setShowDbSetup] = useState(false);
+            const [isLoading, setIsLoading] = useState(false);
+
+            // Formulaires
             const [joinName, setJoinName] = useState("");
             const [joinPassword, setJoinPassword] = useState("");
             const [newGroupName, setNewGroupName] = useState("");
@@ -108,21 +114,20 @@
             const [regTimezone, setRegTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone);
             const [newChallengeTitle, setNewChallengeTitle] = useState("");
             const [newChallengeDesc, setNewChallengeDesc] = useState("");
-            
-            // Heures dynamiques mises à jour toutes les secondes
+
             const [timeTick, setTimeTick] = useState(new Date());
 
-            // --- SAUVEGARDE LOCALE DYNAMIQUE ---
+            // Initialiser le client Supabase
             useEffect(() => {
-                localStorage.setItem('squad_groups', JSON.stringify(groups));
-                localStorage.setItem('squad_members', JSON.stringify(members));
-                localStorage.setItem('squad_challenges', JSON.stringify(challenges));
-                localStorage.setItem('squad_submissions', JSON.stringify(submissions));
-                if (currentUser) {
-                    localStorage.setItem('squad_current_user', JSON.stringify(currentUser));
+                if (sbUrl && sbKey) {
+                    try {
+                        const client = supabase.createClient(sbUrl, sbKey);
+                        setSupabaseClient(client);
+                    } catch (e) {
+                        console.error("Erreur de connexion Supabase:", e);
+                    }
                 }
-                localStorage.setItem('squad_active_group_id', currentGroup);
-            }, [groups, members, challenges, submissions, currentUser, currentGroup]);
+            }, [sbUrl, sbKey]);
 
             // Horloge temps réel
             useEffect(() => {
@@ -130,7 +135,6 @@
                 return () => clearInterval(timer);
             }, []);
 
-            // Fonction pour avoir l'heure d'un fuseau précis
             const getLocalTime = (tz) => {
                 try {
                     return timeTick.toLocaleTimeString('fr-FR', {
@@ -144,229 +148,404 @@
                 }
             };
 
-            // --- INCRIPTION DE L'UTILISATEUR ---
-            const handleRegister = (e) => {
+            // --- CHARGER TOUTES LES DONNÉES DEPUIS SUPABASE ---
+            const loadData = useCallback(async () => {
+                if (!supabaseClient) return;
+                setIsLoading(true);
+                try {
+                    // 1. Charger les groupes
+                    const { data: grps } = await supabaseClient.from('groups').select('*');
+                    setGroups(grps || []);
+
+                    if (grps && grps.length > 0) {
+                        const activeId = currentGroup || grps[0].id;
+                        if (!currentGroup) {
+                            setCurrentGroup(activeId);
+                            localStorage.setItem('squad_active_group_id', activeId);
+                        }
+
+                        // 2. Charger membres du groupe actif
+                        const { data: mems } = await supabaseClient
+                            .from('group_members')
+                            .select('points, profiles(id, name, city, timezone)')
+                            .eq('group_id', activeId);
+
+                        const formattedMems = (mems || []).map(m => ({
+                            id: m.profiles.id,
+                            name: m.profiles.name,
+                            city: m.profiles.city,
+                            timezone: m.profiles.timezone,
+                            points: m.points
+                        }));
+                        setMembers(formattedMems);
+
+                        // 3. Charger défis du groupe actif
+                        const { data: challs } = await supabaseClient
+                            .from('challenges')
+                            .select('*')
+                            .eq('group_id', activeId)
+                            .order('created_at', { ascending: false });
+                        setChallenges(challs || []);
+
+                        // 4. Charger soumissions
+                        const { data: subs } = await supabaseClient
+                            .from('submissions')
+                            .select('*')
+                            .eq('group_id', activeId)
+                            .order('created_at', { ascending: false });
+                        setSubmissions(subs || []);
+                    }
+                } catch (error) {
+                    console.error("Erreur de chargement :", error);
+                } finally {
+                    setIsLoading(false);
+                }
+            }, [supabaseClient, currentGroup]);
+
+            useEffect(() => {
+                if (supabaseClient) {
+                    loadData();
+                }
+            }, [supabaseClient, currentGroup, loadData]);
+
+            // Sauvegarder l'ID de groupe actif en local
+            const handleGroupChange = (groupId) => {
+                setCurrentGroup(groupId);
+                localStorage.setItem('squad_active_group_id', groupId);
+            };
+
+            // --- INSCRIPTION UTILISATEUR ---
+            const handleRegister = async (e) => {
                 e.preventDefault();
-                if (!regUserName || !regCity) return;
-                
+                if (!regUserName || !regCity || !supabaseClient) return;
+
+                const userId = 'usr_' + Date.now();
                 const newUser = {
-                    id: 'usr_' + Date.now(),
+                    id: userId,
                     name: regUserName,
                     city: regCity,
                     timezone: regTimezone
                 };
-                
-                setCurrentUser(newUser);
-                
-                // On l'ajoute automatiquement au groupe actif par défaut
-                const groupMembers = members[currentGroup] || [];
-                if (!groupMembers.some(m => m.name.toLowerCase() === regUserName.toLowerCase())) {
-                    const updated = [...groupMembers, { ...newUser, points: 0 }];
-                    setMembers({ ...members, [currentGroup]: updated });
+
+                setIsLoading(true);
+                try {
+                    // Insérer dans profils Supabase
+                    await supabaseClient.from('profiles').insert([newUser]);
+                    setCurrentUser(newUser);
+                    localStorage.setItem('squad_current_user', JSON.stringify(newUser));
+
+                    // L'associer au groupe actif s'il y en a un
+                    if (currentGroup) {
+                        await supabaseClient.from('group_members').insert([{
+                            group_id: currentGroup,
+                            profile_id: userId,
+                            points: 0
+                        }]);
+                        loadData();
+                    }
+                } catch (error) {
+                    alert("Erreur lors de l'inscription : " + error.message);
+                } finally {
+                    setIsLoading(false);
                 }
             };
 
-            // --- REJOINDRE UN GROUPE EXISTANT ---
-            const handleJoinGroup = (e) => {
+            // --- REJOINDRE UN GROUPE ---
+            const handleJoinGroup = async (e) => {
                 e.preventDefault();
-                const found = groups.find(g => g.id.toLowerCase() === joinName.toLowerCase() || g.name.toLowerCase() === joinName.toLowerCase());
-                if (found && found.password === joinPassword) {
-                    setCurrentGroup(found.id);
-                    setShowJoinModal(false);
-                    
-                    // Ajouter l'utilisateur actuel aux membres du groupe s'il n'y est pas
+                if (!supabaseClient) return;
+
+                setIsLoading(true);
+                try {
+                    const { data, error } = await supabaseClient
+                        .from('groups')
+                        .select('*')
+                        .eq('id', joinName.toLowerCase().trim())
+                        .single();
+
+                    if (data && data.password === joinPassword) {
+                        setCurrentGroup(data.id);
+                        localStorage.setItem('squad_active_group_id', data.id);
+                        setShowJoinModal(false);
+
+                        // Ajouter l'utilisateur aux membres du groupe
+                        if (currentUser) {
+                            await supabaseClient.from('group_members').upsert([{
+                                group_id: data.id,
+                                profile_id: currentUser.id,
+                                points: 0
+                            }]);
+                        }
+                        await loadData();
+                        alert(`Bienvenue dans le groupe : ${data.name} !`);
+                    } else {
+                        alert("Groupe introuvable ou mot de passe incorrect.");
+                    }
+                } catch (err) {
+                    alert("Erreur de connexion : " + err.message);
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+
+            // --- CRÉER UN GROUPE ---
+            const handleCreateGroup = async (e) => {
+                e.preventDefault();
+                if (!newGroupName || !newGroupPass || !supabaseClient) return;
+
+                const newId = newGroupName.toLowerCase().replace(/\s+/g, '-');
+                setIsLoading(true);
+                try {
+                    // Créer le groupe
+                    await supabaseClient.from('groups').insert([{
+                        id: newId,
+                        name: newGroupName,
+                        password: newGroupPass
+                    }]);
+
+                    // Associer le créateur
                     if (currentUser) {
-                        const groupMembers = members[found.id] || [];
-                        if (!groupMembers.some(m => m.id === currentUser.id)) {
-                            setMembers({
-                                ...members,
-                                [found.id]: [...groupMembers, { ...currentUser, points: 0 }]
-                            });
+                        await supabaseClient.from('group_members').insert([{
+                            group_id: newId,
+                            profile_id: currentUser.id,
+                            points: 0
+                        }]);
+                    }
+
+                    // Créer un premier défi par défaut
+                    await supabaseClient.from('challenges').insert([{
+                        id: 'c_' + Date.now(),
+                        group_id: newId,
+                        title: "Prendre un café en terrasse ☕",
+                        description: "Partage ton meilleur spot !",
+                        status: "active"
+                    }]);
+
+                    setCurrentGroup(newId);
+                    localStorage.setItem('squad_active_group_id', newId);
+                    setShowCreateModal(false);
+                    await loadData();
+                    alert(`Groupe "${newGroupName}" créé !`);
+                } catch (err) {
+                    alert("Erreur lors de la création : " + err.message);
+                } finally {
+                    setIsLoading(false);
+                }
+            };
+
+            // --- PROPOSER UN DÉFI ---
+            const handleAddChallenge = async (e) => {
+                e.preventDefault();
+                if (!newChallengeTitle || !supabaseClient) return;
+
+                setIsLoading(true);
+                try {
+                    // Passer l'ancien défi en statut "past"
+                    if (challenges.length > 0) {
+                        const activeId = challenges.find(c => c.status === "active")?.id;
+                        if (activeId) {
+                            await supabaseClient
+                                .from('challenges')
+                                .update({ status: 'past' })
+                                .eq('id', activeId);
                         }
                     }
-                    alert(`Bienvenue dans le groupe : ${found.name} !`);
-                } else {
-                    alert("Nom du groupe ou mot de passe incorrect.");
+
+                    // Insérer le nouveau défi
+                    await supabaseClient.from('challenges').insert([{
+                        id: 'c_' + Date.now(),
+                        group_id: currentGroup,
+                        title: newChallengeTitle,
+                        description: newChallengeDesc,
+                        status: "active"
+                    }]);
+
+                    setShowAddChallengeModal(false);
+                    setNewChallengeTitle("");
+                    setNewChallengeDesc("");
+                    await loadData();
+                } catch (err) {
+                    alert("Erreur d'ajout du défi : " + err.message);
+                } finally {
+                    setIsLoading(false);
                 }
             };
 
-            // --- CRÉER UN NOUVEAU GROUPE ---
-            const handleCreateGroup = (e) => {
-                e.preventDefault();
-                if (!newGroupName || !newGroupPass) return;
-                
-                const newId = newGroupName.toLowerCase().replace(/\s+/g, '-');
-                if (groups.some(g => g.id === newId)) {
-                    alert("Ce nom de groupe est déjà pris !");
-                    return;
-                }
-
-                const newGrp = { id: newId, name: newGroupName, password: newGroupPass };
-                setGroups([...groups, newGrp]);
-                setMembers({
-                    ...members,
-                    [newId]: currentUser ? [{ ...currentUser, points: 0 }] : []
-                });
-                setChallenges({
-                    ...challenges,
-                    [newId]: [{ id: 'c_' + Date.now(), title: "Prendre un café en terrasse ☕", description: "Partage ton meilleur spot !", status: "active" }]
-                });
-                setSubmissions({
-                    ...submissions,
-                    [newId]: []
-                });
-                setCurrentGroup(newId);
-                setShowCreateModal(false);
-                alert(`Groupe "${newGroupName}" créé avec succès ! Partage le nom et le MDP à tes potes.`);
-            };
-
-            // --- PROPOSER / CHANGER DE DÉFI ---
-            const handleAddChallenge = (e) => {
-                e.preventDefault();
-                if (!newChallengeTitle) return;
-
-                const newC = {
-                    id: 'c_' + Date.now(),
-                    title: newChallengeTitle,
-                    description: newChallengeDesc,
-                    status: "active"
-                };
-
-                // Désactiver l'ancien défi actif du groupe
-                const activeGroupChallenges = challenges[currentGroup] || [];
-                const updatedChallenges = activeGroupChallenges.map(c => ({ ...c, status: "past" }));
-
-                setChallenges({
-                    ...challenges,
-                    [currentGroup]: [newC, ...updatedChallenges]
-                });
-                setShowAddChallengeModal(false);
-                setNewChallengeTitle("");
-                setNewChallengeDesc("");
-            };
-
-            // --- SOUMETTRE LA VALIDATION DU DÉFI ---
+            // --- SOUMETTRE LE DÉFI AVEC PHOTO COMPRESSÉE ---
             const handlePhotoUpload = (e) => {
                 const file = e.target.files[0];
-                if (!file || !currentUser) return;
+                if (!file || !currentUser || !supabaseClient) return;
 
-                const activeChallenge = (challenges[currentGroup] || []).find(c => c.status === "active");
+                const activeChallenge = challenges.find(c => c.status === "active");
                 if (!activeChallenge) {
-                    alert("Aucun défi actif à valider !");
+                    alert("Aucun défi actif !");
                     return;
                 }
 
-                // Pour tester en local, on convertit la photo en Base64
+                setIsLoading(true);
                 const reader = new FileReader();
-                reader.onloadend = () => {
-                    const newSub = {
-                        id: 'sub_' + Date.now(),
-                        challengeId: activeChallenge.id,
-                        userId: currentUser.id,
-                        userName: currentUser.name,
-                        userCity: currentUser.city,
-                        userTimezone: currentUser.timezone,
-                        photo: reader.result,
-                        likes: 0,
-                        likedBy: [] // Pour limiter à 1 Super Like par personne
-                    };
+                reader.onloadend = async () => {
+                    try {
+                        // Compression magique de la photo pour rester léger en BDD
+                        const compressedB64 = await compressImage(reader.result);
 
-                    const groupSubs = submissions[currentGroup] || [];
-                    // Vérifie si déjà soumis
-                    if (groupSubs.some(s => s.userId === currentUser.id && s.challengeId === activeChallenge.id)) {
-                        alert("Tu as déjà relevé le défi cette semaine !");
-                        return;
+                        const newSub = {
+                            id: 'sub_' + Date.now(),
+                            group_id: currentGroup,
+                            challenge_id: activeChallenge.id,
+                            user_id: currentUser.id,
+                            user_name: currentUser.name,
+                            user_city: currentUser.city,
+                            user_timezone: currentUser.timezone,
+                            photo: compressedB64,
+                            likes: 0,
+                            liked_by: []
+                        };
+
+                        // Sauvegarde dans Supabase
+                        const { error } = await supabaseClient.from('submissions').insert([newSub]);
+                        if (error) throw error;
+
+                        // Ajout de +50 points au joueur
+                        const memberInfo = members.find(m => m.id === currentUser.id);
+                        const currentPoints = memberInfo ? memberInfo.points : 0;
+
+                        await supabaseClient
+                            .from('group_members')
+                            .update({ points: currentPoints + 50 })
+                            .eq('group_id', currentGroup)
+                            .eq('profile_id', currentUser.id);
+
+                        alert("Défi relevé ! +50 points ! 🎉");
+                        await loadData();
+                    } catch (err) {
+                        alert("Erreur d'envoi : " + err.message);
+                    } finally {
+                        setIsLoading(false);
                     }
-
-                    setSubmissions({
-                        ...submissions,
-                        [currentGroup]: [newSub, ...groupSubs]
-                    });
-
-                    // On donne +50 points direct pour avoir fait le défi
-                    const groupMems = members[currentGroup] || [];
-                    const updatedMems = groupMems.map(m => {
-                        if (m.id === currentUser.id) {
-                            return { ...m, points: m.points + 50 };
-                        }
-                        return m;
-                    });
-                    setMembers({ ...members, [currentGroup]: updatedMems });
-                    alert("Félicitations ! Défi relevé. +50 Points ! 🎉");
                 };
                 reader.readAsDataURL(file);
             };
 
+            // --- CONFIGURER SUPABASE DEPUIS L'ÉCRAN ---
+            const handleSetupDb = (e) => {
+                e.preventDefault();
+                localStorage.setItem('squad_sb_url', sbUrl);
+                localStorage.setItem('squad_sb_key', sbKey);
+                setShowDbSetup(false);
+                window.location.reload(); // Recharger pour initier la connexion
+            };
+
             // --- METTRE UN SUPER-LIKE ---
-            const handleSuperLike = (subId) => {
-                if (!currentUser) return;
-                
-                const groupSubs = submissions[currentGroup] || [];
-                const submission = groupSubs.find(s => s.id === subId);
-                const activeChallenge = (challenges[currentGroup] || []).find(c => c.status === "active");
+            const handleSuperLike = async (subId) => {
+                if (!currentUser || !supabaseClient) return;
+
+                const submission = submissions.find(s => s.id === subId);
+                const activeChallenge = challenges.find(c => c.status === "active");
 
                 if (!submission || !activeChallenge) return;
 
-                // Bloquer si c'est sa propre photo
-                if (submission.userId === currentUser.id) {
-                    alert("Tu ne peux pas t'auto-attribuer ton Super Like ! 😉");
+                if (submission.user_id === currentUser.id) {
+                    alert("Tu ne peux pas t'attribuer ton propre Super Like ! 😉");
                     return;
                 }
 
-                // Vérifier si l'utilisateur a déjà mis un super like pour CE défi précis
-                const alreadyLiked = groupSubs.some(s => s.likedBy && s.likedBy.includes(currentUser.id));
+                // Vérifier si l'utilisateur a déjà voté pour ce défi
+                const alreadyLiked = submissions.some(s => s.liked_by && s.liked_by.includes(currentUser.id));
                 if (alreadyLiked) {
-                    alert("Tu as déjà attribué ton unique Super Like pour ce défi !");
+                    alert("Tu as déjà utilisé ton unique Super Like sur ce défi !");
                     return;
                 }
 
-                // Ajouter le Super Like
-                const updatedSubs = groupSubs.map(s => {
-                    if (s.id === subId) {
-                        return {
-                            ...s,
-                            likes: s.likes + 1,
-                            likedBy: [...(s.likedBy || []), currentUser.id]
-                        };
-                    }
-                    return s;
-                });
+                setIsLoading(true);
+                try {
+                    const currentLikedBy = submission.liked_by || [];
+                    const updatedLikedBy = [...currentLikedBy, currentUser.id];
+                    const updatedLikesCount = (submission.likes || 0) + 1;
 
-                setSubmissions({
-                    ...submissions,
-                    [currentGroup]: updatedSubs
-                });
+                    // Mettre à jour les likes sur la photo
+                    await supabaseClient
+                        .from('submissions')
+                        .update({ likes: updatedLikesCount, liked_by: updatedLikedBy })
+                        .eq('id', subId);
 
-                // Le créateur de la photo gagne +15 points bonus !
-                const groupMems = members[currentGroup] || [];
-                const updatedMems = groupMems.map(m => {
-                    if (m.id === submission.userId) {
-                        return { ...m, points: m.points + 15 };
-                    }
-                    return m;
-                });
-                setMembers({ ...members, [currentGroup]: updatedMems });
-                alert("Super Like envoyé ! Ton pote gagne +15 Points bonus 🚀");
+                    // Trouver les points actuels du joueur liké pour lui ajouter +15 points
+                    const creatorMember = members.find(m => m.id === submission.user_id);
+                    const creatorPoints = creatorMember ? creatorMember.points : 0;
+
+                    await supabaseClient
+                        .from('group_members')
+                        .update({ points: creatorPoints + 15 })
+                        .eq('group_id', currentGroup)
+                        .eq('profile_id', submission.user_id);
+
+                    alert("Super Like envoyé ! Ton pote gagne +15 points ! 🚀");
+                    await loadData();
+                } catch (err) {
+                    alert("Erreur de Super Like : " + err.message);
+                } finally {
+                    setIsLoading(false);
+                }
             };
 
-            // Données calculées
-            const activeGroupObj = groups.find(g => g.id === currentGroup) || groups[0];
-            const activeChallenge = (challenges[currentGroup] || []).find(c => c.status === "active");
-            const activeGroupMembers = members[currentGroup] || [];
-            const activeGroupSubmissions = submissions[currentGroup] || [];
+            const activeGroupObj = groups.find(g => g.id === currentGroup) || { name: "SquadApp" };
+            const activeChallenge = challenges.find(c => c.status === "active");
 
-            // --- DESIGN DE LA PAGE D'INSCRIPTION SI NOUVEL UTILISATEUR ---
+            // --- ÉCRAN 1 : CONFIGURATION BASE DE DONNÉES SI ABSENTE ---
+            if (!sbUrl || !sbKey || showDbSetup) {
+                return (
+                    <div class="p-6 flex flex-col justify-center items-center min-h-[600px] flex-grow bg-white">
+                        <div class="text-center mb-6">
+                            <span class="text-5xl">⚡</span>
+                            <h1 class="text-2xl font-bold text-gray-800 mt-2">Connecte ta base de données</h1>
+                            <p class="text-sm text-gray-500 mt-2">Colle ici tes identifiants Supabase gratuits pour que tes amis puissent jouer avec toi en temps réel.</p>
+                        </div>
+
+                        <form onSubmit={handleSetupDb} class="w-full space-y-4">
+                            <div>
+                                <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Project URL</label>
+                                <input 
+                                    type="text" 
+                                    value={sbUrl} 
+                                    onChange={e => setSbUrl(e.target.value)} 
+                                    placeholder="https://xxxxxx.supabase.co" 
+                                    class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-pink-300 outline-none"
+                                    required 
+                                />
+                            </div>
+
+                            <div>
+                                <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">API Key (Anon Public Key)</label>
+                                <input 
+                                    type="password" 
+                                    value={sbKey} 
+                                    onChange={e => setSbKey(e.target.value)} 
+                                    placeholder="eyJhbGciOi..." 
+                                    class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-pink-300 outline-none"
+                                    required 
+                                />
+                            </div>
+
+                            <button type="submit" class="w-full py-3 bg-gradient-to-r from-pink-500 to-yellow-500 text-white rounded-xl font-bold shadow-lg">
+                                Connecter ma Base de Données 🔌
+                            </button>
+                        </form>
+                    </div>
+                );
+            }
+
+            // --- ÉCRAN 2 : INSCRIPTION DE L'UTILISATEUR ---
             if (!currentUser) {
                 return (
                     <div class="p-6 flex flex-col justify-center items-center min-h-[500px] flex-grow bg-white">
                         <div class="text-center mb-8">
                             <span class="text-5xl">🔥</span>
                             <h1 class="text-3xl font-bold text-gray-800 mt-2">SquadApp</h1>
-                            <p class="text-sm text-gray-500 mt-1">Sors de ta zone de confort avec ton groupe d'amis</p>
+                            <p class="text-sm text-gray-500 mt-1">Sors de ta zone de confort avec tes potes</p>
                         </div>
 
                         <form onSubmit={handleRegister} class="w-full space-y-4">
-                            <h2 class="text-lg font-bold text-gray-700">Créer ton profil de joueur</h2>
+                            <h2 class="text-lg font-bold text-gray-700">Crée ton profil</h2>
                             
                             <div>
                                 <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Ton Prénom</label>
@@ -393,32 +572,32 @@
                             </div>
 
                             <div>
-                                <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Créneau Horaire Détecté</label>
-                                <select 
+                                <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Fuseau horaire</label>
+                                <input 
+                                    type="text" 
                                     value={regTimezone} 
-                                    onChange={e => setRegTimezone(e.target.value)} 
-                                    class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-pink-300 transition text-sm text-gray-600 bg-gray-50 cursor-pointer"
-                                >
-                                    <option value="Europe/Paris">Europe / Paris (France)</option>
-                                    <option value="Asia/Tokyo">Asie / Tokyo (Japon)</option>
-                                    <option value="America/Montreal">Amérique / Montréal (Canada)</option>
-                                    <option value="America/New_York">Amérique / New York (USA)</option>
-                                    <option value="Europe/London">Europe / Londres (UK)</option>
-                                    <option value="Australia/Sydney">Australie / Sydney</option>
-                                </select>
+                                    disabled 
+                                    class="w-full px-4 py-3 rounded-xl border border-gray-100 bg-gray-50 text-gray-500 cursor-not-allowed text-sm" 
+                                />
                             </div>
 
-                            <button type="submit" class="w-full py-3 bg-gradient-to-r from-pink-500 to-yellow-500 text-white rounded-xl font-bold shadow-lg hover:opacity-90 transition transform hover:-translate-y-0.5">
-                                Commencer l'aventure 🚀
+                            <button type="submit" disabled={isLoading} class="w-full py-3 bg-gradient-to-r from-pink-500 to-yellow-500 text-white rounded-xl font-bold shadow-lg disabled:opacity-50">
+                                {isLoading ? "Création..." : "Commencer l'aventure 🚀"}
                             </button>
                         </form>
                     </div>
                 );
             }
 
+            // --- ÉCRAN CENTRAL PRINCIPAL ---
             return (
                 <div class="flex flex-col h-full flex-grow bg-slate-50 relative">
                     
+                    {/* INDICATEUR DE CHARGEMENT */}
+                    {isLoading && (
+                        <div class="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-pink-500 to-yellow-400 animate-pulse z-50"></div>
+                    )}
+
                     {/* --- HEADER --- */}
                     <header class="bg-white px-4 py-3 shadow-sm border-b border-gray-100 flex items-center justify-between sticky top-0 z-10">
                         <div class="flex items-center space-x-2">
@@ -427,7 +606,7 @@
                             </div>
                             <div>
                                 <h1 class="text-lg font-bold text-gray-800 leading-none">SquadApp</h1>
-                                <span class="text-xs text-gray-500">Heure Locale : {getLocalTime(currentUser.timezone)}</span>
+                                <span class="text-[10px] text-gray-400">Heure Locale : {getLocalTime(currentUser.timezone)}</span>
                             </div>
                         </div>
 
@@ -435,10 +614,10 @@
                         <div class="flex items-center space-x-1">
                             <select 
                                 value={currentGroup} 
-                                onChange={e => setCurrentGroup(e.target.value)} 
+                                onChange={e => handleGroupChange(e.target.value)} 
                                 class="bg-gray-100 text-gray-800 text-xs font-bold rounded-lg px-2.5 py-1.5 focus:outline-none border-none cursor-pointer hover:bg-gray-200 transition"
                             >
-                                {groups.map(g => (
+                                {groups.length === 0 ? <option>Pas de groupe</option> : groups.map(g => (
                                     <option key={g.id} value={g.id}>{g.name}</option>
                                 ))}
                             </select>
@@ -452,9 +631,11 @@
                         </div>
                     </header>
 
-                    {/* --- VILLE ET HEURE DES MEMBRES ACTIFS EN BANDEAU --- */}
+                    {/* --- HORLOGES MONDIALES DES MEMBRES ACTIFS EN TEMPS RÉEL --- */}
                     <div class="bg-gradient-to-r from-slate-900 to-slate-800 text-white px-3 py-2 text-xs flex space-x-3 overflow-x-auto no-scrollbar shadow-inner">
-                        {activeGroupMembers.map(m => (
+                        {members.length === 0 ? (
+                            <div class="text-[11px] text-slate-400">Aucun autre membre connecté. Invite tes amis !</div>
+                        ) : members.map(m => (
                             <div key={m.id} class="flex items-center space-x-1.5 bg-slate-700 bg-opacity-50 px-2 py-1 rounded-full whitespace-nowrap">
                                 <span class="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse"></span>
                                 <span class="font-medium">{m.name}</span>
@@ -464,20 +645,28 @@
                         ))}
                     </div>
 
-                    {/* --- CONTENU DE L'ONGLET SÉLECTIONNÉ --- */}
+                    {/* --- CONTENU --- */}
                     <main class="flex-grow p-4 overflow-y-auto max-h-[640px] no-scrollbar pb-24">
                         
-                        {/* --- ONGLET FEED (DÉFI ACTIF + VALIDATIONS) --- */}
+                        {/* REFRESH MANUEL */}
+                        <div class="flex justify-end mb-2">
+                            <button onClick={loadData} class="text-xs text-gray-400 hover:text-gray-600 flex items-center space-x-1">
+                                <i class="fa-solid fa-arrows-rotate"></i>
+                                <span>Actualiser</span>
+                            </button>
+                        </div>
+
+                        {/* --- TAB FEED --- */}
                         {activeTab === "feed" && (
                             <div class="space-y-4">
                                 
-                                {/* Carte du défi actif */}
+                                {/* Carte du défi de la semaine */}
                                 {activeChallenge ? (
                                     <div class="bg-gradient-to-tr from-pink-500 via-purple-500 to-indigo-600 rounded-2xl p-5 text-white shadow-xl relative overflow-hidden">
                                         <div class="absolute right-[-20px] top-[-20px] w-32 h-32 bg-white opacity-10 rounded-full"></div>
                                         <div class="flex justify-between items-start">
                                             <span class="bg-white bg-opacity-25 text-xs font-bold px-2.5 py-1 rounded-full uppercase tracking-wider">
-                                                Défi de la semaine 🔥
+                                                Défi Actif 🔥
                                             </span>
                                             <button 
                                                 onClick={() => setShowAddChallengeModal(true)}
@@ -489,68 +678,64 @@
                                         <h3 class="text-2xl font-bold mt-3 leading-snug">{activeChallenge.title}</h3>
                                         <p class="text-sm text-purple-100 mt-1">{activeChallenge.description}</p>
                                         
-                                        {/* Bouton d'upload de validation */}
                                         <div class="mt-4 pt-4 border-t border-white border-opacity-20 flex justify-between items-center">
-                                            <span class="text-xs text-purple-100">Rapporte +50 pts (+15 pts par Super Like !)</span>
+                                            <span class="text-xs text-purple-100">Rapporte +50 pts (+15 pts par Super Like)</span>
                                             <label class="bg-yellow-400 hover:bg-yellow-300 text-slate-900 font-bold text-xs px-4 py-2 rounded-xl shadow cursor-pointer transition transform active:scale-95 flex items-center space-x-1">
                                                 <i class="fa-solid fa-camera"></i>
-                                                <span>Valider le défi</span>
+                                                <span>Relever le défi</span>
                                                 <input type="file" accept="image/*" onChange={handlePhotoUpload} class="hidden" />
                                             </label>
                                         </div>
                                     </div>
                                 ) : (
                                     <div class="bg-white rounded-2xl p-6 text-center border-2 border-dashed border-gray-200">
-                                        <p class="text-gray-500">Aucun défi actif pour le moment.</p>
+                                        <p class="text-gray-500">Aucun défi hebdomadaire actif.</p>
                                         <button 
                                             onClick={() => setShowAddChallengeModal(true)}
                                             class="mt-3 bg-pink-500 text-white font-bold text-xs px-4 py-2 rounded-xl"
                                         >
-                                            Proposer le premier défi
+                                            Proposer un défi
                                         </button>
                                     </div>
                                 )}
 
-                                {/* Fil d'actualité des photos validées */}
+                                {/* Galerie photo / Preuves */}
                                 <div class="space-y-4">
                                     <h3 class="text-sm font-bold text-gray-500 uppercase tracking-wider mt-6">Preuves de la tribu</h3>
                                     
-                                    {activeGroupSubmissions.length === 0 ? (
+                                    {submissions.length === 0 ? (
                                         <div class="text-center py-8 text-gray-400">
                                             <i class="fa-solid fa-images text-3xl mb-2 text-gray-300"></i>
                                             <p class="text-xs">Personne n'a encore validé le défi. Sois le premier !</p>
                                         </div>
                                     ) : (
-                                        activeGroupSubmissions.map(sub => (
+                                        submissions.map(sub => (
                                             <div key={sub.id} class="bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-100">
-                                                {/* Header post */}
                                                 <div class="px-4 py-3 flex justify-between items-center">
                                                     <div>
-                                                        <span class="font-bold text-gray-800 text-sm">{sub.userName}</span>
-                                                        <span class="text-xs text-gray-400 ml-1.5">depuis {sub.userCity}</span>
+                                                        <span class="font-bold text-gray-800 text-sm">{sub.user_name}</span>
+                                                        <span class="text-xs text-gray-400 ml-1.5">depuis {sub.user_city}</span>
                                                     </div>
                                                     <span class="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-bold">
-                                                        {getLocalTime(sub.userTimezone).substring(0, 5)} local
+                                                        {getLocalTime(sub.user_timezone).substring(0, 5)} local
                                                     </span>
                                                 </div>
                                                 
-                                                {/* Photo */}
                                                 <div class="aspect-square bg-slate-100 overflow-hidden relative">
                                                     <img src={sub.photo} alt="Preuve défi" class="w-full h-full object-cover" />
                                                 </div>
 
-                                                {/* Barre d'action et Super Like */}
                                                 <div class="px-4 py-3 bg-slate-50 flex justify-between items-center">
                                                     <div class="flex items-center space-x-1">
-                                                        <span class="text-pink-500 text-lg">❤️</span>
-                                                        <span class="text-xs font-bold text-gray-600">{sub.likes} Super-Like{sub.likes > 1 ? 's' : ''}</span>
+                                                        <span class="text-pink-500 text-lg">⭐</span>
+                                                        <span class="text-xs font-bold text-gray-600">{sub.likes} Super Like{sub.likes > 1 ? 's' : ''}</span>
                                                     </div>
                                                     <button 
                                                         onClick={() => handleSuperLike(sub.id)}
                                                         class="bg-pink-500 hover:bg-pink-600 text-white text-xs font-bold px-3 py-1.5 rounded-xl shadow-sm transition transform active:scale-95 flex items-center space-x-1"
                                                     >
                                                         <i class="fa-solid fa-star text-yellow-300"></i>
-                                                        <span>Super Like !</span>
+                                                        <span>Donner mon Super Like !</span>
                                                     </button>
                                                 </div>
                                             </div>
@@ -560,75 +745,77 @@
                             </div>
                         )}
 
-                        {/* --- LEADERBOARD --- */}
+                        {/* --- TAB LEADERBOARD --- */}
                         {activeTab === "leaderboard" && (
                             <div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
                                 <div class="text-center mb-6">
                                     <span class="text-4xl">🏆</span>
                                     <h2 class="text-xl font-bold text-gray-800 mt-2">Le Tableau d'Honneur</h2>
-                                    <p class="text-xs text-gray-400">Qui est le roi de la zone de confort ?</p>
+                                    <p class="text-xs text-gray-400">Qui est au sommet de sa zone de confort ?</p>
                                 </div>
 
                                 <div class="divide-y divide-gray-100">
-                                    {activeGroupMembers.sort((a,b) => b.points - a.points).map((mem, index) => (
-                                        <div key={mem.id} class="py-3.5 flex items-center justify-between">
-                                            <div class="flex items-center space-x-3">
-                                                <span class={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs ${
-                                                    index === 0 ? 'bg-yellow-400 text-yellow-950' :
-                                                    index === 1 ? 'bg-slate-300 text-slate-800' :
-                                                    index === 2 ? 'bg-amber-600 text-white' : 'bg-gray-100 text-gray-500'
-                                                }`}>
-                                                    {index + 1}
-                                                </span>
-                                                <div>
-                                                    <p class="font-bold text-gray-800 text-sm">{mem.name}</p>
-                                                    <span class="text-[10px] text-gray-400 uppercase tracking-wider">{mem.city}</span>
+                                    {members.length === 0 ? (
+                                        <p class="text-xs text-gray-400 text-center py-4">Pas encore de membres enregistrés dans ce groupe.</p>
+                                    ) : (
+                                        members.sort((a,b) => b.points - a.points).map((mem, index) => (
+                                            <div key={mem.id} class="py-3.5 flex items-center justify-between">
+                                                <div class="flex items-center space-x-3">
+                                                    <span class={`w-6 h-6 rounded-full flex items-center justify-center font-bold text-xs ${
+                                                        index === 0 ? 'bg-yellow-400 text-yellow-950' :
+                                                        index === 1 ? 'bg-slate-300 text-slate-800' :
+                                                        index === 2 ? 'bg-amber-600 text-white' : 'bg-gray-100 text-gray-500'
+                                                    }`}>
+                                                        {index + 1}
+                                                    </span>
+                                                    <div>
+                                                        <p class="font-bold text-gray-800 text-sm">{mem.name}</p>
+                                                        <span class="text-[10px] text-gray-400 uppercase tracking-wider">{mem.city}</span>
+                                                    </div>
+                                                </div>
+                                                <div class="text-right">
+                                                    <span class="font-black text-transparent bg-clip-text bg-gradient-to-r from-pink-500 to-yellow-500">
+                                                        {mem.points} pts
+                                                    </span>
                                                 </div>
                                             </div>
-                                            <div class="text-right">
-                                                <span class="font-black text-transparent bg-clip-text bg-gradient-to-r from-pink-500 to-yellow-500">
-                                                    {mem.points} pts
-                                                </span>
-                                            </div>
-                                        </div>
-                                    ))}
+                                        ))
+                                    )}
                                 </div>
                             </div>
                         )}
 
-                        {/* --- PARAMÈTRES / LIENS DE PARTAGE --- */}
+                        {/* --- TAB COMPTE / PARTAGE --- */}
                         {activeTab === "settings" && (
                             <div class="space-y-4">
                                 <div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
                                     <h2 class="text-md font-bold text-gray-800 mb-2">Partager ce groupe</h2>
-                                    <p class="text-xs text-gray-500 mb-4">Invite tes potes à rejoindre la tribu rapidement !</p>
+                                    <p class="text-xs text-gray-500 mb-4 font-semibold">Donne ces identifiants à tes amis pour qu'ils rejoignent la tribu !</p>
                                     
-                                    <div class="bg-slate-50 p-3 rounded-xl border border-gray-150 flex justify-between items-center mb-4">
-                                        <span class="text-xs font-mono text-gray-600 overflow-hidden text-ellipsis whitespace-nowrap mr-2">
-                                            {window.location.origin}/join?g={activeGroupObj.id}
-                                        </span>
-                                        <button 
-                                            onClick={() => {
-                                                navigator.clipboard.writeText(`${window.location.origin}/join?g=${activeGroupObj.id}`);
-                                                alert("Lien d'invitation copié !");
-                                            }}
-                                            class="bg-pink-100 text-pink-500 font-bold text-xs px-3 py-1.5 rounded-lg whitespace-nowrap"
-                                        >
-                                            Copier le lien
-                                        </button>
-                                    </div>
-
-                                    <div class="border-t border-gray-100 pt-4 space-y-2">
-                                        <p class="text-xs text-gray-400">Données de connexion d'accès :</p>
-                                        <div class="flex justify-between text-xs">
-                                            <span class="text-gray-500">Identifiant :</span>
-                                            <span class="font-bold text-gray-800">{activeGroupObj.id}</span>
+                                    <div class="space-y-2 text-xs">
+                                        <div class="flex justify-between border-b pb-2">
+                                            <span class="text-gray-500">Identifiant Unique du groupe :</span>
+                                            <span class="font-black text-pink-600">{activeGroupObj.id}</span>
                                         </div>
-                                        <div class="flex justify-between text-xs">
-                                            <span class="text-gray-500">Mot de passe :</span>
+                                        <div class="flex justify-between border-b pb-2">
+                                            <span class="text-gray-500">Mot de passe d'accès :</span>
                                             <span class="font-bold text-gray-800">{activeGroupObj.password}</span>
                                         </div>
                                     </div>
+                                    <div class="mt-4 bg-yellow-50 text-yellow-800 p-3 rounded-xl text-[11px]">
+                                        📢 <strong>Méthode pour rejoindre :</strong> Tes potes n'ont qu'à ouvrir le site, cliquer sur le bouton <strong>+</strong> en haut à droite, puis rentrer l'Identifiant et le Mot de passe.
+                                    </div>
+                                </div>
+
+                                <div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 space-y-3">
+                                    <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Base de Données connectée</h3>
+                                    <p class="text-xs text-gray-500">Ton application est actuellement liée en direct à ton serveur Supabase.</p>
+                                    <button 
+                                        onClick={() => setShowDbSetup(true)}
+                                        class="text-xs font-bold text-blue-500 hover:underline"
+                                    >
+                                        Modifier la configuration Supabase URL / Clef
+                                    </button>
                                 </div>
 
                                 <button 
@@ -638,13 +825,13 @@
                                     }}
                                     class="w-full py-3 bg-red-50 text-red-500 rounded-xl font-bold text-xs hover:bg-red-100 transition"
                                 >
-                                    Effacer les données de test (Reset)
+                                    Se déconnecter (Reset complet de l'appareil)
                                 </button>
                             </div>
                         )}
                     </main>
 
-                    {/* --- NAVIGATION DU BAS --- */}
+                    {/* --- BARRE DE NAVIGATION DU BAS --- */}
                     <nav class="absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 px-6 py-2 flex justify-between items-center z-10 shadow-lg">
                         <button 
                             onClick={() => setActiveTab("feed")} 
@@ -664,6 +851,7 @@
 
                         <button 
                             onClick={() => setShowCreateModal(true)} 
+                            title="Créer un groupe"
                             class="w-12 h-12 rounded-full bg-gradient-to-tr from-pink-500 to-yellow-500 text-white flex items-center justify-center shadow-lg -translate-y-4 hover:opacity-90 transform active:scale-95 transition"
                         >
                             <i class="fa-solid fa-users text-lg"></i>
@@ -678,7 +866,7 @@
                         </button>
                     </nav>
 
-                    {/* --- MODAL REJOINDRE UN GROUPE --- */}
+                    {/* --- MODAL REJOINDRE GROUPE --- */}
                     {showJoinModal && (
                         <div class="absolute inset-0 bg-slate-950 bg-opacity-60 flex items-center justify-center z-50 p-4">
                             <div class="bg-white rounded-2xl p-6 w-full max-w-sm space-y-4">
@@ -688,25 +876,25 @@
                                 </div>
                                 <form onSubmit={handleJoinGroup} class="space-y-3">
                                     <div>
-                                        <label class="block text-xs text-gray-400 mb-1">ID du groupe</label>
-                                        <input type="text" value={joinName} onChange={e => setJoinName(e.target.value)} placeholder="Nom ou ID unique" class="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-pink-300 outline-none text-sm" required />
+                                        <label class="block text-xs text-gray-400 mb-1">Identifiant Unique du groupe</label>
+                                        <input type="text" value={joinName} onChange={e => setJoinName(e.target.value)} placeholder="Ex: les-évadés" class="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-pink-300 outline-none text-sm" required />
                                     </div>
                                     <div>
-                                        <label class="block text-xs text-gray-400 mb-1">Mot de passe d'accès</label>
+                                        <label class="block text-xs text-gray-400 mb-1">Mot de passe du groupe</label>
                                         <input type="password" value={joinPassword} onChange={e => setJoinPassword(e.target.value)} class="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-pink-300 outline-none text-sm" required />
                                     </div>
-                                    <button type="submit" class="w-full py-2.5 bg-pink-500 text-white font-bold text-sm rounded-xl">Accéder au groupe</button>
+                                    <button type="submit" class="w-full py-2.5 bg-pink-500 text-white font-bold text-sm rounded-xl">Rejoindre la tribu</button>
                                 </form>
                             </div>
                         </div>
                     )}
 
-                    {/* --- MODAL CRÉER UN GROUPE --- */}
+                    {/* --- MODAL CRÉER GROUPE --- */}
                     {showCreateModal && (
                         <div class="absolute inset-0 bg-slate-950 bg-opacity-60 flex items-center justify-center z-50 p-4">
                             <div class="bg-white rounded-2xl p-6 w-full max-w-sm space-y-4">
                                 <div class="flex justify-between items-center">
-                                    <h3 class="font-bold text-gray-800 text-lg">Créer un nouveau groupe d'amis</h3>
+                                    <h3 class="font-bold text-gray-800 text-lg">Lancer un nouveau groupe</h3>
                                     <button onClick={() => setShowCreateModal(false)} class="text-gray-400 hover:text-gray-600"><i class="fa-solid fa-xmark"></i></button>
                                 </div>
                                 <form onSubmit={handleCreateGroup} class="space-y-3">
@@ -715,33 +903,33 @@
                                         <input type="text" value={newGroupName} onChange={e => setNewGroupName(e.target.value)} placeholder="Ex: Les Évadés" class="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-pink-300 outline-none text-sm" required />
                                     </div>
                                     <div>
-                                        <label class="block text-xs text-gray-400 mb-1">Mot de passe du groupe</label>
-                                        <input type="password" value={newGroupPass} onChange={e => setNewGroupPass(e.target.value)} placeholder="Pour sécuriser l'accès" class="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-pink-300 outline-none text-sm" required />
+                                        <label class="block text-xs text-gray-400 mb-1">Mot de passe d'accès</label>
+                                        <input type="password" value={newGroupPass} onChange={e => setNewGroupPass(e.target.value)} placeholder="Sélectionne un code d'accès" class="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-pink-300 outline-none text-sm" required />
                                     </div>
-                                    <button type="submit" class="w-full py-2.5 bg-gradient-to-r from-pink-500 to-yellow-500 text-white font-bold text-sm rounded-xl">Lancer le groupe</button>
+                                    <button type="submit" class="w-full py-2.5 bg-gradient-to-r from-pink-500 to-yellow-500 text-white font-bold text-sm rounded-xl">Lancer mon groupe 🚀</button>
                                 </form>
                             </div>
                         </div>
                     )}
 
-                    {/* --- MODAL PROPOSER UN NOUVEAU DÉFI --- */}
+                    {/* --- MODAL CHANGER LE DÉFI --- */}
                     {showAddChallengeModal && (
                         <div class="absolute inset-0 bg-slate-950 bg-opacity-60 flex items-center justify-center z-50 p-4">
                             <div class="bg-white rounded-2xl p-6 w-full max-w-sm space-y-4">
                                 <div class="flex justify-between items-center">
-                                    <h3 class="font-bold text-gray-800 text-lg">Proposer le défi de la semaine</h3>
+                                    <h3 class="font-bold text-gray-800 text-lg">Nouveau défi hebdomadaire</h3>
                                     <button onClick={() => setShowAddChallengeModal(false)} class="text-gray-400 hover:text-gray-600"><i class="fa-solid fa-xmark"></i></button>
                                 </div>
                                 <form onSubmit={handleAddChallenge} class="space-y-3">
                                     <div>
                                         <label class="block text-xs text-gray-400 mb-1">Intitulé du défi</label>
-                                        <input type="text" value={newChallengeTitle} onChange={e => setNewChallengeTitle(e.target.value)} placeholder="Ex: Faire une photo avec un animal insolite" class="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-pink-300 outline-none text-sm" required />
+                                        <input type="text" value={newChallengeTitle} onChange={e => setNewChallengeTitle(e.target.value)} placeholder="Ex: Commander une boisson dans une autre langue" class="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-pink-300 outline-none text-sm" required />
                                     </div>
                                     <div>
-                                        <label class="block text-xs text-gray-400 mb-1">Consignes (Optionnel)</label>
-                                        <textarea value={newChallengeDesc} onChange={e => setNewChallengeDesc(e.target.value)} placeholder="Précise les règles..." class="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-pink-300 outline-none text-sm h-20" />
+                                        <label class="block text-xs text-gray-400 mb-1">Précisions (Optionnel)</label>
+                                        <textarea value={newChallengeDesc} onChange={e => setNewChallengeDesc(e.target.value)} placeholder="Explique comment valider..." class="w-full px-3 py-2 border rounded-xl focus:ring-2 focus:ring-pink-300 outline-none text-sm h-20" />
                                     </div>
-                                    <button type="submit" class="w-full py-2.5 bg-pink-500 text-white font-bold text-sm rounded-xl">Changer le défi actif 🚀</button>
+                                    <button type="submit" class="w-full py-2.5 bg-pink-500 text-white font-bold text-sm rounded-xl">Lancer le Défi !</button>
                                 </form>
                             </div>
                         </div>
