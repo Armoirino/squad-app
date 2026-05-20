@@ -1,0 +1,16 @@
+{
+  "short_name": "SquadApp",
+  "name": "SquadApp - Défis entre Potes",
+  "icons": [
+    {
+      "src": "[https://cdn-icons-png.flaticon.com/512/3204/3204323.png](https://cdn-icons-png.flaticon.com/512/3204/3204323.png)",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "/index.html",
+  "background_color": "#ffffff",
+  "display": "standalone",
+  "theme_color": "#ec4899",
+  "orientation": "portrait"
+}
