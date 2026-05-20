@@ -235,57 +235,85 @@
                 if (!supabaseClient) return;
                 setIsLoading(true);
                 try {
-                    // 1. Charger les groupes
-                    const { data: grps } = await supabaseClient.from('groups').select('*');
-                    setGroups(grps || []);
+                    let joinedGroupIds = [];
+                    let activeId = currentGroup;
 
-                    if (!currentGroup) {
+                    if (currentUser) {
+                        const { data: memberRows } = await supabaseClient
+                            .from('group_members')
+                            .select('group_id')
+                            .eq('profile_id', currentUser.id);
+
+                        joinedGroupIds = (memberRows || []).map(m => m.group_id).filter(Boolean);
+                        if (joinedGroupIds.length > 0) {
+                            const { data: userGroups } = await supabaseClient
+                                .from('groups')
+                                .select('*')
+                                .in('id', joinedGroupIds);
+                            setGroups(userGroups || []);
+                        } else {
+                            setGroups([]);
+                        }
+
+                        if (!activeId && joinedGroupIds.length > 0) {
+                            activeId = joinedGroupIds[0];
+                            setCurrentGroup(activeId);
+                            localStorage.setItem('squad_active_group_id', activeId);
+                        }
+
+                        if (activeId && !joinedGroupIds.includes(activeId)) {
+                            activeId = "";
+                            setCurrentGroup("");
+                            localStorage.removeItem('squad_active_group_id');
+                        }
+                    } else {
+                        setGroups([]);
+                    }
+
+                    if (!activeId) {
                         setMembers([]);
                         setChallenges([]);
                         setSubmissions([]);
                         setExpandedChallengeId(null);
+                        return;
                     }
 
-                    if (grps && grps.length > 0 && currentGroup) {
-                        const activeId = currentGroup;
+                    // 2. Charger membres du groupe actif
+                    const { data: mems } = await supabaseClient
+                        .from('group_members')
+                        .select('points, profiles(id, name, city, timezone)')
+                        .eq('group_id', activeId);
 
-                        // 2. Charger membres du groupe actif
-                        const { data: mems } = await supabaseClient
-                            .from('group_members')
-                            .select('points, profiles(id, name, city, timezone)')
-                            .eq('group_id', activeId);
+                    const formattedMems = (mems || []).map(m => ({
+                        id: m.profiles.id,
+                        name: m.profiles.name,
+                        city: m.profiles.city,
+                        timezone: m.profiles.timezone,
+                        points: m.points
+                    }));
+                    setMembers(formattedMems);
 
-                        const formattedMems = (mems || []).map(m => ({
-                            id: m.profiles.id,
-                            name: m.profiles.name,
-                            city: m.profiles.city,
-                            timezone: m.profiles.timezone,
-                            points: m.points
-                        }));
-                        setMembers(formattedMems);
+                    // 3. Charger défis du groupe actif
+                    const { data: challs } = await supabaseClient
+                        .from('challenges')
+                        .select('*')
+                        .eq('group_id', activeId)
+                        .order('created_at', { ascending: false });
+                    setChallenges(challs || []);
 
-                        // 3. Charger défis du groupe actif
-                        const { data: challs } = await supabaseClient
-                            .from('challenges')
-                            .select('*')
-                            .eq('group_id', activeId)
-                            .order('created_at', { ascending: false });
-                        setChallenges(challs || []);
-
-                        // 4. Charger soumissions
-                        const { data: subs } = await supabaseClient
-                            .from('submissions')
-                            .select('*')
-                            .eq('group_id', activeId)
-                            .order('created_at', { ascending: false });
-                        setSubmissions(subs || []);
-                    }
+                    // 4. Charger soumissions
+                    const { data: subs } = await supabaseClient
+                        .from('submissions')
+                        .select('*')
+                        .eq('group_id', activeId)
+                        .order('created_at', { ascending: false });
+                    setSubmissions(subs || []);
                 } catch (error) {
                     console.error("Erreur de chargement :", error);
                 } finally {
                     setIsLoading(false);
                 }
-            }, [supabaseClient, currentGroup]);
+            }, [supabaseClient, currentGroup, currentUser]);
 
             useEffect(() => {
                 if (supabaseClient) {
@@ -426,15 +454,6 @@
                         password: newGroupPass
                     }]);
 
-                    // Associer le créateur
-                    if (currentUser) {
-                        await supabaseClient.from('group_members').insert([{
-                            group_id: newId,
-                            profile_id: currentUser.id,
-                            points: 0
-                        }]);
-                    }
-
                     // Créer un premier défi par défaut
                     await supabaseClient.from('challenges').insert([{
                         id: 'c_' + Date.now(),
@@ -446,11 +465,9 @@
                         created_by: currentUser?.id || null
                     }]);
 
-                    setCurrentGroup(newId);
-                    localStorage.setItem('squad_active_group_id', newId);
                     setShowCreateGroupModal(false);
                     await loadData();
-                    alert(`Groupe "${newGroupName}" créé !`);
+                    alert(`Groupe "${newGroupName}" créé ! Tu dois maintenant le rejoindre avec son identifiant.`);
                 } catch (err) {
                     alert("Erreur lors de la création : " + err.message);
                 } finally {
@@ -889,8 +906,9 @@
                                 value={currentGroup} 
                                 onChange={e => handleGroupChange(e.target.value)} 
                                 class="bg-gray-100 text-gray-800 text-xs font-bold rounded-lg px-2.5 py-1.5 focus:outline-none border-none cursor-pointer hover:bg-gray-200 transition"
+                                disabled={groups.length === 0}
                             >
-                                <option value="">Aucun groupe</option>
+                                <option value="">{groups.length === 0 ? 'Aucun groupe rejoint' : 'Sélectionne un groupe'}</option>
                                 {groups.map(g => (
                                     <option key={g.id} value={g.id}>{g.name}</option>
                                 ))}
