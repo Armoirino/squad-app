@@ -44,12 +44,10 @@
     <script type="text/babel">
         const { useState, useEffect, useCallback } = React;
 
-        // --- CONFIGURATION SUPABASE ---
-        // Tu peux modifier ces valeurs directement ici OU les configurer directement dans l'application sur ton écran !
         const DEFAULT_SUPABASE_URL = ""; 
         const DEFAULT_SUPABASE_KEY = "";
 
-        // --- FONCTION DE COMPRESSION D'IMAGE (Pour éviter de saturer la base de données) ---
+        // --- COMPRESSION D'IMAGE ---
         const compressImage = (base64Str) => {
             return new Promise((resolve) => {
                 const img = new Image();
@@ -76,13 +74,13 @@
                     canvas.height = height;
                     const ctx = canvas.getContext('2d');
                     ctx.drawImage(img, 0, 0, width, height);
-                    resolve(canvas.toDataURL('image/jpeg', 0.6)); // Compresse à 60% de qualité
+                    resolve(canvas.toDataURL('image/jpeg', 0.6));
                 };
             });
         };
 
         function App() {
-            // Configuration Supabase dynamique
+            // Configuration Supabase
             const [sbUrl, setSbUrl] = useState(() => localStorage.getItem('squad_sb_url') || DEFAULT_SUPABASE_URL);
             const [sbKey, setSbKey] = useState(() => localStorage.getItem('squad_sb_key') || DEFAULT_SUPABASE_KEY);
             const [supabaseClient, setSupabaseClient] = useState(null);
@@ -148,13 +146,16 @@
                 }
             };
 
-            // --- CHARGER TOUTES LES DONNÉES DEPUIS SUPABASE ---
+            // --- CHARGER TOUTES LES DONNÉES DEPUIS SUPABASE (AVEC GESTION DES ERREURS) ---
             const loadData = useCallback(async () => {
                 if (!supabaseClient) return;
                 setIsLoading(true);
                 try {
                     // 1. Charger les groupes
-                    const { data: grps } = await supabaseClient.from('groups').select('*');
+                    const { data: grps } = await supabaseClient
+                        .from('groups')
+                        .select('*')
+                        .throwOnError();
                     setGroups(grps || []);
 
                     if (grps && grps.length > 0) {
@@ -168,7 +169,8 @@
                         const { data: mems } = await supabaseClient
                             .from('group_members')
                             .select('points, profiles(id, name, city, timezone)')
-                            .eq('group_id', activeId);
+                            .eq('group_id', activeId)
+                            .throwOnError();
 
                         const formattedMems = (mems || []).map(m => ({
                             id: m.profiles.id,
@@ -184,7 +186,8 @@
                             .from('challenges')
                             .select('*')
                             .eq('group_id', activeId)
-                            .order('created_at', { ascending: false });
+                            .order('created_at', { ascending: false })
+                            .throwOnError();
                         setChallenges(challs || []);
 
                         // 4. Charger soumissions
@@ -192,11 +195,13 @@
                             .from('submissions')
                             .select('*')
                             .eq('group_id', activeId)
-                            .order('created_at', { ascending: false });
+                            .order('created_at', { ascending: false })
+                            .throwOnError();
                         setSubmissions(subs || []);
                     }
                 } catch (error) {
-                    console.error("Erreur de chargement :", error);
+                    console.error("Erreur de chargement des données Supabase :", error);
+                    alert("⚠️ Erreur lors du chargement des données :\n" + error.message);
                 } finally {
                     setIsLoading(false);
                 }
@@ -230,21 +235,28 @@
                 setIsLoading(true);
                 try {
                     // Insérer dans profils Supabase
-                    await supabaseClient.from('profiles').insert([newUser]);
+                    await supabaseClient
+                        .from('profiles')
+                        .insert([newUser])
+                        .throwOnError();
+
                     setCurrentUser(newUser);
                     localStorage.setItem('squad_current_user', JSON.stringify(newUser));
 
                     // L'associer au groupe actif s'il y en a un
                     if (currentGroup) {
-                        await supabaseClient.from('group_members').insert([{
-                            group_id: currentGroup,
-                            profile_id: userId,
-                            points: 0
-                        }]);
-                        loadData();
+                        await supabaseClient
+                            .from('group_members')
+                            .insert([{
+                                group_id: currentGroup,
+                                profile_id: userId,
+                                points: 0
+                            }])
+                            .throwOnError();
+                        await loadData();
                     }
                 } catch (error) {
-                    alert("Erreur lors de l'inscription : " + error.message);
+                    alert("❌ Impossible de s'inscrire :\n" + error.message);
                 } finally {
                     setIsLoading(false);
                 }
@@ -257,11 +269,12 @@
 
                 setIsLoading(true);
                 try {
-                    const { data, error } = await supabaseClient
+                    const { data } = await supabaseClient
                         .from('groups')
                         .select('*')
                         .eq('id', joinName.toLowerCase().trim())
-                        .single();
+                        .single()
+                        .throwOnError();
 
                     if (data && data.password === joinPassword) {
                         setCurrentGroup(data.id);
@@ -270,19 +283,22 @@
 
                         // Ajouter l'utilisateur aux membres du groupe
                         if (currentUser) {
-                            await supabaseClient.from('group_members').upsert([{
-                                group_id: data.id,
-                                profile_id: currentUser.id,
-                                points: 0
-                            }]);
+                            await supabaseClient
+                                .from('group_members')
+                                .upsert([{
+                                    group_id: data.id,
+                                    profile_id: currentUser.id,
+                                    points: 0
+                                }])
+                                .throwOnError();
                         }
                         await loadData();
                         alert(`Bienvenue dans le groupe : ${data.name} !`);
                     } else {
-                        alert("Groupe introuvable ou mot de passe incorrect.");
+                        alert("Mot de passe incorrect pour ce groupe.");
                     }
                 } catch (err) {
-                    alert("Erreur de connexion : " + err.message);
+                    alert("❌ Erreur de connexion au groupe :\n" + err.message);
                 } finally {
                     setIsLoading(false);
                 }
@@ -297,29 +313,38 @@
                 setIsLoading(true);
                 try {
                     // Créer le groupe
-                    await supabaseClient.from('groups').insert([{
-                        id: newId,
-                        name: newGroupName,
-                        password: newGroupPass
-                    }]);
+                    await supabaseClient
+                        .from('groups')
+                        .insert([{
+                            id: newId,
+                            name: newGroupName,
+                            password: newGroupPass
+                        }])
+                        .throwOnError();
 
                     // Associer le créateur
                     if (currentUser) {
-                        await supabaseClient.from('group_members').insert([{
-                            group_id: newId,
-                            profile_id: currentUser.id,
-                            points: 0
-                        }]);
+                        await supabaseClient
+                            .from('group_members')
+                            .insert([{
+                                group_id: newId,
+                                profile_id: currentUser.id,
+                                points: 0
+                            }])
+                            .throwOnError();
                     }
 
                     // Créer un premier défi par défaut
-                    await supabaseClient.from('challenges').insert([{
-                        id: 'c_' + Date.now(),
-                        group_id: newId,
-                        title: "Prendre un café en terrasse ☕",
-                        description: "Partage ton meilleur spot !",
-                        status: "active"
-                    }]);
+                    await supabaseClient
+                        .from('challenges')
+                        .insert([{
+                            id: 'c_' + Date.now(),
+                            group_id: newId,
+                            title: "Prendre un café en terrasse ☕",
+                            description: "Partage ton meilleur spot !",
+                            status: "active"
+                        }])
+                        .throwOnError();
 
                     setCurrentGroup(newId);
                     localStorage.setItem('squad_active_group_id', newId);
@@ -327,7 +352,7 @@
                     await loadData();
                     alert(`Groupe "${newGroupName}" créé !`);
                 } catch (err) {
-                    alert("Erreur lors de la création : " + err.message);
+                    alert("❌ Erreur de création du groupe :\n" + err.message);
                 } finally {
                     setIsLoading(false);
                 }
@@ -347,31 +372,35 @@
                             await supabaseClient
                                 .from('challenges')
                                 .update({ status: 'past' })
-                                .eq('id', activeId);
+                                .eq('id', activeId)
+                                .throwOnError();
                         }
                     }
 
                     // Insérer le nouveau défi
-                    await supabaseClient.from('challenges').insert([{
-                        id: 'c_' + Date.now(),
-                        group_id: currentGroup,
-                        title: newChallengeTitle,
-                        description: newChallengeDesc,
-                        status: "active"
-                    }]);
+                    await supabaseClient
+                        .from('challenges')
+                        .insert([{
+                            id: 'c_' + Date.now(),
+                            group_id: currentGroup,
+                            title: newChallengeTitle,
+                            description: newChallengeDesc,
+                            status: "active"
+                        }])
+                        .throwOnError();
 
                     setShowAddChallengeModal(false);
                     setNewChallengeTitle("");
                     setNewChallengeDesc("");
                     await loadData();
                 } catch (err) {
-                    alert("Erreur d'ajout du défi : " + err.message);
+                    alert("❌ Erreur d'ajout du défi :\n" + err.message);
                 } finally {
                     setIsLoading(false);
                 }
             };
 
-            // --- SOUMETTRE LE DÉFI AVEC PHOTO COMPRESSÉE ---
+            // --- SOUMETTRE LE DÉFI AVEC PHOTO ---
             const handlePhotoUpload = (e) => {
                 const file = e.target.files[0];
                 if (!file || !currentUser || !supabaseClient) return;
@@ -386,7 +415,6 @@
                 const reader = new FileReader();
                 reader.onloadend = async () => {
                     try {
-                        // Compression magique de la photo pour rester léger en BDD
                         const compressedB64 = await compressImage(reader.result);
 
                         const newSub = {
@@ -403,8 +431,10 @@
                         };
 
                         // Sauvegarde dans Supabase
-                        const { error } = await supabaseClient.from('submissions').insert([newSub]);
-                        if (error) throw error;
+                        await supabaseClient
+                            .from('submissions')
+                            .insert([newSub])
+                            .throwOnError();
 
                         // Ajout de +50 points au joueur
                         const memberInfo = members.find(m => m.id === currentUser.id);
@@ -414,12 +444,13 @@
                             .from('group_members')
                             .update({ points: currentPoints + 50 })
                             .eq('group_id', currentGroup)
-                            .eq('profile_id', currentUser.id);
+                            .eq('profile_id', currentUser.id)
+                            .throwOnError();
 
                         alert("Défi relevé ! +50 points ! 🎉");
                         await loadData();
                     } catch (err) {
-                        alert("Erreur d'envoi : " + err.message);
+                        alert("❌ Erreur d'envoi de la preuve :\n" + err.message);
                     } finally {
                         setIsLoading(false);
                     }
@@ -430,10 +461,19 @@
             // --- CONFIGURER SUPABASE DEPUIS L'ÉCRAN ---
             const handleSetupDb = (e) => {
                 e.preventDefault();
-                localStorage.setItem('squad_sb_url', sbUrl);
-                localStorage.setItem('squad_sb_key', sbKey);
+                // Nettoyage de l'URL pour supprimer le slash final de rest/v1/
+                let cleanUrl = sbUrl.trim();
+                if (cleanUrl.endsWith('/')) {
+                    cleanUrl = cleanUrl.slice(0, -1);
+                }
+                if (cleanUrl.endsWith('/rest/v1')) {
+                    cleanUrl = cleanUrl.replace('/rest/v1', '');
+                }
+
+                localStorage.setItem('squad_sb_url', cleanUrl);
+                localStorage.setItem('squad_sb_key', sbKey.trim());
                 setShowDbSetup(false);
-                window.location.reload(); // Recharger pour initier la connexion
+                window.location.reload();
             };
 
             // --- METTRE UN SUPER-LIKE ---
@@ -450,7 +490,6 @@
                     return;
                 }
 
-                // Vérifier si l'utilisateur a déjà voté pour ce défi
                 const alreadyLiked = submissions.some(s => s.liked_by && s.liked_by.includes(currentUser.id));
                 if (alreadyLiked) {
                     alert("Tu as déjà utilisé ton unique Super Like sur ce défi !");
@@ -467,7 +506,8 @@
                     await supabaseClient
                         .from('submissions')
                         .update({ likes: updatedLikesCount, liked_by: updatedLikedBy })
-                        .eq('id', subId);
+                        .eq('id', subId)
+                        .throwOnError();
 
                     // Trouver les points actuels du joueur liké pour lui ajouter +15 points
                     const creatorMember = members.find(m => m.id === submission.user_id);
@@ -477,12 +517,13 @@
                         .from('group_members')
                         .update({ points: creatorPoints + 15 })
                         .eq('group_id', currentGroup)
-                        .eq('profile_id', submission.user_id);
+                        .eq('profile_id', submission.user_id)
+                        .throwOnError();
 
                     alert("Super Like envoyé ! Ton pote gagne +15 points ! 🚀");
                     await loadData();
                 } catch (err) {
-                    alert("Erreur de Super Like : " + err.message);
+                    alert("❌ Erreur d'enregistrement du Super Like :\n" + err.message);
                 } finally {
                     setIsLoading(false);
                 }
@@ -520,7 +561,7 @@
                                     type="password" 
                                     value={sbKey} 
                                     onChange={e => setSbKey(e.target.value)} 
-                                    placeholder="eyJhbGciOi..." 
+                                    placeholder="sb_publishable_..." 
                                     class="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-pink-300 outline-none"
                                     required 
                                 />
@@ -593,7 +634,6 @@
             return (
                 <div class="flex flex-col h-full flex-grow bg-slate-50 relative">
                     
-                    {/* INDICATEUR DE CHARGEMENT */}
                     {isLoading && (
                         <div class="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-pink-500 to-yellow-400 animate-pulse z-50"></div>
                     )}
