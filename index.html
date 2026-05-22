@@ -171,7 +171,7 @@
                     setEditName(currentUser.name || "");
                     setEditCity(currentUser.city || "");
                     setEditTimezone(currentUser.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone);
-                    setProfilePhotoUrl(currentUser.avatar_url || currentUser.photo_url || "");
+                    setProfilePhotoUrl(currentUser.avatar_url || "");
                 }
             }, [currentUser]);
 
@@ -286,7 +286,7 @@
                     // 2. Charger membres du groupe actif
                     const { data: mems } = await supabaseClient
                         .from('group_members')
-                        .select('points, profiles(id, name, city, timezone)')
+                        .select('points, profiles(id, name, city, timezone, avatar_url)')
                         .eq('group_id', activeId);
 
                     const formattedMems = (mems || []).map(m => ({
@@ -294,6 +294,7 @@
                         name: m.profiles.name,
                         city: m.profiles.city,
                         timezone: m.profiles.timezone,
+                        avatar_url: m.profiles.avatar_url,
                         points: m.points
                     }));
                     setMembers(formattedMems);
@@ -397,7 +398,7 @@
 
                     setCurrentUser(data);
                     localStorage.setItem('squad_current_user', JSON.stringify(data));
-                    setProfilePhotoUrl(data.avatar_url || data.photo_url || "");
+                    setProfilePhotoUrl(data.avatar_url || "");
                     setShowLoginSection(false);
                 } catch (err) {
                     alert("Erreur de connexion : " + err.message);
@@ -587,6 +588,7 @@
                             user_name: currentUser.name,
                             user_city: currentUser.city,
                             user_timezone: currentUser.timezone,
+                            avatar_url: currentUser.avatar_url || profilePhotoUrl || null,
                             description: submissionDescription || null,
                             photo: compressedB64,
                             likes: 0,
@@ -658,6 +660,7 @@
                         user_name: currentUser.name,
                         user_city: currentUser.city,
                         user_timezone: currentUser.timezone,
+                        avatar_url: currentUser.avatar_url || profilePhotoUrl || null,
                         description: validationDesc || null,
                         photo: compressedB64,
                         likes: 0,
@@ -1104,9 +1107,18 @@
                                                             ) : challengeSubs.map(sub => (
                                                                 <div key={sub.id} class="rounded-2xl border border-gray-200 overflow-hidden">
                                                                     <div class="px-4 py-3 flex items-center justify-between gap-3 bg-slate-50">
-                                                                        <div>
-                                                                            <p class="font-bold text-gray-800 text-sm">{sub.user_name}</p>
-                                                                            <p class="text-[11px] text-gray-500">{sub.user_city} • {getLocalTime(sub.user_timezone).substring(0, 5)} local</p>
+                                                                        <div class="flex items-center gap-3">
+                                                                            <div class="w-10 h-10 rounded-full overflow-hidden bg-gradient-to-tr from-pink-500 to-yellow-400 flex items-center justify-center text-white font-bold">
+                                                                                {(sub.avatar_url || sub.user_avatar || sub.avatar || sub.user_photo || (members.find(m => m.id === sub.user_id) && members.find(m => m.id === sub.user_id).avatar_url)) ? (
+                                                                                    <img src={sub.avatar_url || sub.user_avatar || sub.avatar || sub.user_photo || (members.find(m => m.id === sub.user_id) && members.find(m => m.id === sub.user_id).avatar_url)} alt="Avatar" class="w-full h-full object-cover" />
+                                                                                ) : (
+                                                                                    <span class="text-sm">{sub.user_name?.substring(0,2).toUpperCase()}</span>
+                                                                                )}
+                                                                            </div>
+                                                                            <div>
+                                                                                <p class="font-bold text-gray-800 text-sm">{sub.user_name}</p>
+                                                                                <p class="text-[11px] text-gray-500">{sub.user_city} • {getLocalTime(sub.user_timezone).substring(0, 5)} local</p>
+                                                                            </div>
                                                                         </div>
                                                                         <div class="flex items-center gap-2">
                                                                             <span class="text-[11px] text-slate-500">{sub.likes} SL</span>
