@@ -70,6 +70,14 @@
         const DEFAULT_SUPABASE_URL = "https://wbwscspbsmtbomewnpel.supabase.co";
         const DEFAULT_SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indid3Njc3Bic210Ym9tZXducGVsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkyNzQ4NzQsImV4cCI6MjA5NDg1MDg3NH0.b3WOkpTVT2XnXGRPVS6rVUjSEDJbwsLzULPkpvOUFG0";
 
+        // --- HASH SHA-256 côté client (pas de bcrypt nécessaire en browser) ---
+        const hashPassword = async (password) => {
+            const msgBuffer = new TextEncoder().encode(password);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        };
+
         const compressImage = (base64Str, maxSize = 1080) => {
             return new Promise((resolve) => {
                 const img = new Image();
@@ -146,6 +154,9 @@
             // --- LIGHTBOX ---
             const [lightboxSrc, setLightboxSrc] = useState(null);
             const [lightboxName, setLightboxName] = useState("");
+
+            // --- CONFIRMATION QUITTER GROUPE ---
+            const [showConfirmLeave, setShowConfirmLeave] = useState(false);
 
             // --- TOAST NOTIFICATIONS ---
             const [toasts, setToasts] = useState([]);
@@ -286,6 +297,17 @@
                 if (supabaseClient) loadData();
             }, [supabaseClient, currentGroup, loadData]);
 
+            // --- REFRESH AUTOMATIQUE toutes les 30 secondes ---
+            const [lastRefresh, setLastRefresh] = useState(Date.now());
+            useEffect(() => {
+                if (!supabaseClient || !currentUser) return;
+                const refreshInterval = setInterval(async () => {
+                    await loadData();
+                    setLastRefresh(Date.now());
+                }, 30000);
+                return () => clearInterval(refreshInterval);
+            }, [supabaseClient, currentUser, loadData]);
+
             const handleGroupChange = (groupId) => {
                 setCurrentGroup(groupId);
                 if (groupId) { localStorage.setItem('squad_active_group_id', groupId); }
@@ -330,7 +352,7 @@
                         city: regCity,
                         timezone: regTimezone,
                         avatar_url: avatarUrl,
-                        password: regPassword
+                        password: await hashPassword(regPassword)
                     };
 
                     await supabaseClient.from('profiles').insert([newUser]);
@@ -356,7 +378,8 @@
                 try {
                     const { data, error } = await supabaseClient
                         .from('profiles').select('*').eq('name', loginName.trim()).single();
-                    if (error || !data || data.password !== loginPassword) {
+                    const hashedInput = await hashPassword(loginPassword);
+                    if (error || !data || data.password !== hashedInput) {
                         alert("Pseudo ou mot de passe incorrect."); return;
                     }
                     setCurrentUser(data);
@@ -749,6 +772,13 @@
                                 <option value="">{groups.length === 0 ? 'Aucun groupe rejoint' : 'Sélectionne un groupe'}</option>
                                 {groups.map(g => (<option key={g.id} value={g.id}>{g.name}</option>))}
                             </select>
+                            <button
+                                onClick={async () => { await loadData(); setLastRefresh(Date.now()); showToast("Feed mis à jour ✓", "info"); }}
+                                class="w-8 h-8 rounded-full bg-gray-100 hover:bg-pink-100 flex items-center justify-center text-gray-400 hover:text-pink-500 transition"
+                                title="Actualiser"
+                            >
+                                <i class="fa-solid fa-rotate-right text-xs"></i>
+                            </button>
                         </div>
                     </header>
 
@@ -987,7 +1017,7 @@
                                         <button onClick={() => setShowCreateGroupModal(true)} class="w-full py-3 bg-slate-50 text-slate-800 rounded-xl font-bold text-xs hover:bg-slate-100 transition">Créer un nouveau groupe</button>
                                     </div>
                                     {currentGroup && (
-                                        <button onClick={handleLeaveGroup} class="w-full py-3 bg-red-50 text-red-500 rounded-xl font-bold text-xs hover:bg-red-100 transition">Quitter le groupe</button>
+                                        <button onClick={() => setShowConfirmLeave(true)} class="w-full py-3 bg-red-50 text-red-500 rounded-xl font-bold text-xs hover:bg-red-100 transition">Quitter le groupe</button>
                                     )}
                                     <a href="https://www.instagram.com/antonio44360/" target="_blank" rel="noopener noreferrer" class="w-full inline-block text-center">
                                         <button class="w-full py-3 bg-white text-pink-600 rounded-xl border border-pink-100 font-bold text-xs hover:bg-pink-50 transition">Contacter le support</button>
@@ -1134,6 +1164,37 @@
                                     </div>
                                     <button type="submit" class="w-full py-2.5 bg-pink-500 text-white font-bold text-sm rounded-xl">Lancer le Défi !</button>
                                 </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* --- MODALE CONFIRMATION QUITTER GROUPE --- */}
+                    {showConfirmLeave && (
+                        <div class="absolute inset-0 bg-slate-950 bg-opacity-60 flex items-center justify-center z-50 p-6">
+                            <div class="bg-white rounded-2xl p-6 w-full max-w-sm space-y-4 shadow-2xl">
+                                <div class="text-center">
+                                    <div class="w-14 h-14 rounded-full bg-red-50 flex items-center justify-center mx-auto mb-3">
+                                        <i class="fa-solid fa-door-open text-red-400 text-2xl"></i>
+                                    </div>
+                                    <h3 class="font-bold text-gray-800 text-lg">Quitter le groupe ?</h3>
+                                    <p class="text-sm text-gray-500 mt-2">
+                                        Tu vas perdre ta place dans <span class="font-bold text-gray-700">{(groups.find(g => g.id === currentGroup) || {}).name || "ce groupe"}</span>. Tes points accumulés seront perdus et tu devras rejoindre à nouveau pour y accéder.
+                                    </p>
+                                </div>
+                                <div class="flex gap-3">
+                                    <button
+                                        onClick={() => setShowConfirmLeave(false)}
+                                        class="flex-1 py-3 bg-slate-100 text-slate-700 rounded-xl font-bold text-sm hover:bg-slate-200 transition"
+                                    >
+                                        Annuler
+                                    </button>
+                                    <button
+                                        onClick={async () => { setShowConfirmLeave(false); await handleLeaveGroup(); }}
+                                        class="flex-1 py-3 bg-red-500 text-white rounded-xl font-bold text-sm hover:bg-red-600 transition"
+                                    >
+                                        Quitter quand même
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     )}
