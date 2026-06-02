@@ -189,7 +189,19 @@
             const [showCommentsFor, setShowCommentsFor] = useState(null);
             const [commentLoading, setCommentLoading] = useState(false);
 
-            // --- TOAST NOTIFICATIONS ---
+            const [notifications, setNotifications] = useState(() => {
+                try { return JSON.parse(localStorage.getItem('squad_notifications') || '[]'); } catch (e) { return []; }
+            });
+            const [pushEnabled, setPushEnabled] = useState(() => localStorage.getItem('squad_push_enabled') === 'true');
+            const notificationsSnapshotRef = useRef(null);
+            if (notificationsSnapshotRef.current === null) {
+                try {
+                    notificationsSnapshotRef.current = JSON.parse(localStorage.getItem('squad_notification_snapshot') || '{}');
+                } catch (e) {
+                    notificationsSnapshotRef.current = {};
+                }
+            }
+
             const [toasts, setToasts] = useState([]);
             const showToast = (msg, type = "success") => {
                 const id = Date.now();
@@ -198,6 +210,235 @@
                     setToasts(prev => prev.map(t => t.id === id ? { ...t, hiding: true } : t));
                     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 300);
                 }, 3200);
+            };
+
+            const persistNotifications = (next) => {
+                setNotifications(next);
+                localStorage.setItem('squad_notifications', JSON.stringify(next));
+            };
+
+            const updateNotificationSnapshot = (snapshot) => {
+                notificationsSnapshotRef.current = snapshot;
+                localStorage.setItem('squad_notification_snapshot', JSON.stringify(snapshot));
+            };
+
+            const browserNotify = (notif) => {
+                if (!pushEnabled || typeof window === 'undefined' || !('Notification' in window)) return;
+                if (Notification.permission === 'granted') {
+                    new Notification(notif.title, { body: notif.description || '', icon: '/favicon.ico' });
+                } else if (Notification.permission !== 'denied') {
+                    Notification.requestPermission().then((permission) => {
+                        if (permission === 'granted') {
+                            new Notification(notif.title, { body: notif.description || '', icon: '/favicon.ico' });
+                        }
+                    });
+                }
+            };
+
+            const addNotification = (notif) => {
+                if (!notif?.id) return;
+                setNotifications(prev => {
+                    if (prev.some(item => item.id === notif.id)) return prev;
+                    const next = [{ ...notif, read: notif.read === false ? false : false }, ...prev].sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+                    localStorage.setItem('squad_notifications', JSON.stringify(next));
+                    return next;
+                });
+                browserNotify(notif);
+            };
+
+            const markAllNotificationsRead = () => {
+                const next = notifications.map(n => ({ ...n, read: true }));
+                persistNotifications(next);
+            };
+
+            const clearNotifications = () => {
+                persistNotifications([]);
+            };
+
+            const togglePushEnabled = () => {
+                const next = !pushEnabled;
+                setPushEnabled(next);
+                localStorage.setItem('squad_push_enabled', next);
+                if (next && typeof window !== 'undefined' && 'Notification' in window && Notification.permission !== 'granted' && Notification.permission !== 'denied') {
+                    Notification.requestPermission();
+                }
+            };
+
+            const getNotificationIcon = (type) => {
+                switch (type) {
+                    case 'new_challenge': return '🆕';
+                    case 'super_like': return '🚀';
+                    case 'comment': return '💬';
+                    case 'expiring': return '⏰';
+                    case 'finished': return '🏁';
+                    case 'rank': return '📈';
+                    case 'winner': return '👑';
+                    case 'inactive': return '😴';
+                    default: return '🔔';
+                }
+            };
+
+            const formatRelativeTime = (createdAt) => {
+                const date = new Date(createdAt);
+                const diff = Date.now() - date.getTime();
+                if (diff < 60000) return 'à l’instant';
+                if (diff < 3600000) return `${Math.floor(diff / 60000)} min`; 
+                if (diff < 86400000) return `${Math.floor(diff / 3600000)} h`; 
+                return `${Math.floor(diff / 86400000)} j`;
+            };
+
+            const generateNotifications = (loadedChallenges, loadedSubmissions, loadedComments, loadedMembers) => {
+                if (!currentUser) return;
+                const prev = notificationsSnapshotRef.current || {};
+                const prevChallengeIds = new Set(prev.challengeIds || []);
+                const prevSubmissionIds = new Set(prev.submissionIds || []);
+                const prevCommentIds = new Set(prev.commentIds || []);
+                const prevLikes = prev.submissionLikes || {};
+                const prevChallengeStatuses = prev.challengeStatuses || {};
+                const prevRank = typeof prev.rank === 'number' ? prev.rank : null;
+                const now = new Date();
+                const initialRun = !prev.initialized;
+                const mySubmissions = loadedSubmissions.filter(s => s.user_id === currentUser.id);
+                const mySubmissionIds = new Set(mySubmissions.map(s => s.id));
+                const myRankIndex = loadedMembers.findIndex(m => m.id === currentUser.id);
+                const currentRank = myRankIndex >= 0 ? myRankIndex + 1 : null;
+                const knownIds = new Set(notifications.map(n => n.id));
+
+                const maybeAdd = (notif) => {
+                    if (!notif?.id || knownIds.has(notif.id)) return;
+                    knownIds.add(notif.id);
+                    addNotification(notif);
+                };
+
+                const buildChallengeStatus = (challenge) => {
+                    if (isChallengeExpired(challenge)) return 'expired';
+                    if (getChallengeExpiry(challenge).getTime() - now.getTime() <= 24 * 3600 * 1000) return 'expiring';
+                    return 'active';
+                };
+
+                loadedChallenges.forEach(challenge => {
+                    const status = buildChallengeStatus(challenge);
+                    if (!initialRun && !prevChallengeIds.has(challenge.id)) {
+                        maybeAdd({
+                            id: `new_challenge_${challenge.id}`,
+                            title: '🆕 Nouveau défi lancé',
+                            description: challenge.title || 'Un nouveau défi vient de démarrer.',
+                            created_at: new Date().toISOString(),
+                            type: 'new_challenge'
+                        });
+                    }
+                    const prevStatus = prevChallengeStatuses[challenge.id];
+                    if (!initialRun && prevStatus === 'active' && status === 'expiring' && !loadedSubmissions.some(sub => sub.challenge_id === challenge.id && sub.user_id === currentUser.id)) {
+                        maybeAdd({
+                            id: `expiring_${challenge.id}`,
+                            title: '⏰ Défi qui expire dans moins de 24h',
+                            description: `${challenge.title || 'Ce défi'} n'a pas encore ta participation.`,
+                            created_at: new Date().toISOString(),
+                            type: 'expiring'
+                        });
+                    }
+                    if (!initialRun && prevStatus !== 'expired' && status === 'expired') {
+                        const count = loadedSubmissions.filter(sub => sub.challenge_id === challenge.id).length;
+                        maybeAdd({
+                            id: `finished_${challenge.id}`,
+                            title: '🏁 Défi terminé',
+                            description: `${challenge.title || 'Ce défi'} s'est achevé avec ${count} participant(s).`,
+                            created_at: new Date().toISOString(),
+                            type: 'finished'
+                        });
+                    }
+                });
+
+                if (!initialRun) {
+                    loadedSubmissions.forEach(submission => {
+                        if (!prevSubmissionIds.has(submission.id) && submission.user_id !== currentUser.id) {
+                            const challenge = loadedChallenges.find(ch => ch.id === submission.challenge_id);
+                            maybeAdd({
+                                id: `friend_submission_${submission.id}`,
+                                title: '📸 Un pote valide un défi',
+                                description: `${submission.user_name || 'Un pote'} a relevé ${challenge?.title || 'un défi'}.`,
+                                created_at: new Date(submission.created_at || Date.now()).toISOString(),
+                                type: 'new_challenge'
+                            });
+                        }
+                    });
+
+                    loadedComments.forEach(comment => {
+                        if (!prevCommentIds.has(comment.id) && mySubmissionIds.has(comment.submission_id) && comment.user_id !== currentUser.id) {
+                            maybeAdd({
+                                id: `comment_${comment.id}`,
+                                title: '💬 Quelqu’un commente ta réponse',
+                                description: `${comment.user_name || 'Quelqu’un'}: ${comment.content ? comment.content.slice(0, 80) : ''}`,
+                                created_at: new Date(comment.created_at || Date.now()).toISOString(),
+                                type: 'comment'
+                            });
+                        }
+                    });
+
+                    mySubmissions.forEach(submission => {
+                        const previousLikes = prevLikes[submission.id] || 0;
+                        const currentLikes = submission.likes || 0;
+                        if (currentLikes > previousLikes) {
+                            const delta = currentLikes - previousLikes;
+                            for (let i = 1; i <= delta; i++) {
+                                maybeAdd({
+                                    id: `like_${submission.id}_${previousLikes + i}`,
+                                    title: '🚀 Tu reçois un Super Like',
+                                    description: `Ta réponse a maintenant ${previousLikes + i} Super Like(s).`,
+                                    created_at: new Date().toISOString(),
+                                    type: 'super_like'
+                                });
+                            }
+                        }
+                    });
+
+                    if (currentRank !== null && prevRank !== null && currentRank < prevRank) {
+                        const title = currentRank === 1 ? '👑 Tu passes en tête !' : '📈 Tu montes au classement';
+                        maybeAdd({
+                            id: `rank_up_${currentRank}_${Date.now()}`,
+                            title,
+                            description: `Tu es maintenant ${currentRank}ᵉ du groupe.`,
+                            created_at: new Date().toISOString(),
+                            type: 'rank'
+                        });
+                    }
+                }
+
+                const lastSeen = localStorage.getItem('squad_last_seen_at');
+                if (lastSeen && !knownIds.has('inactive_reminder')) {
+                    const diff = new Date().getTime() - new Date(lastSeen).getTime();
+                    if (diff >= 5 * 24 * 3600 * 1000) {
+                        maybeAdd({
+                            id: 'inactive_reminder',
+                            title: '😴 Rappel : tu n’as pas ouvert l’app depuis 5 jours',
+                            description: 'Retourne voir ton groupe et rattrape les défis en cours.',
+                            created_at: new Date().toISOString(),
+                            type: 'inactive'
+                        });
+                    }
+                }
+
+                const challengeStatuses = {};
+                loadedChallenges.forEach(challenge => {
+                    challengeStatuses[challenge.id] = buildChallengeStatus(challenge);
+                });
+
+                updateNotificationSnapshot({
+                    initialized: true,
+                    challengeIds: loadedChallenges.map(ch => ch.id),
+                    submissionIds: loadedSubmissions.map(sub => sub.id),
+                    commentIds: loadedComments.map(com => com.id),
+                    submissionLikes: loadedSubmissions.reduce((acc, sub) => { acc[sub.id] = sub.likes || 0; return acc; }, {}),
+                    challengeStatuses,
+                    rank: currentRank
+                });
+            };
+
+            const unreadCount = notifications.filter(n => !n.read).length;
+
+            const markNotificationRead = (id) => {
+                const next = notifications.map(n => n.id === id ? { ...n, read: true } : n);
+                persistNotifications(next);
             };
 
             const timezoneOptions = [
@@ -223,6 +464,7 @@
                     setEditCity(currentUser.city || "");
                     setEditTimezone(currentUser.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone);
                     setProfilePhotoUrl(currentUser.avatar_url || "");
+                    localStorage.setItem('squad_last_seen_at', new Date().toISOString());
                 }
             }, [currentUser]);
 
@@ -323,6 +565,7 @@
                     const { data: comms } = await supabaseClient
                         .from('comments').select('*').eq('group_id', activeId).order('created_at', { ascending: true });
                     setComments(comms || []);
+                    generateNotifications(challs || [], subs || [], comms || [], formattedMems);
                 } catch (error) {
                     console.error("Erreur de chargement :", error);
                 } finally { setIsLoading(false); }
@@ -961,6 +1204,16 @@
                             >
                                 <i class="fa-solid fa-rotate-right text-xs"></i>
                             </button>
+                            <button
+                                onClick={() => setActiveTab('notifications')}
+                                class="relative w-10 h-10 rounded-full bg-gray-100 hover:bg-pink-100 flex items-center justify-center text-gray-400 hover:text-pink-500 transition"
+                                title="Notifications"
+                            >
+                                <i class="fa-solid fa-bell text-sm"></i>
+                                {unreadCount > 0 && (
+                                    <span class="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-red-500 border-2 border-white"></span>
+                                )}
+                            </button>
                         </div>
                     </header>
 
@@ -1168,6 +1421,50 @@
                             </div>
                         )}
 
+                        {activeTab === "notifications" && (
+                            <div class="space-y-4">
+                                <div class="bg-white rounded-3xl p-5 shadow-sm border border-gray-100">
+                                    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+                                        <div>
+                                            <h2 class="text-xl font-bold text-gray-800">Notifications</h2>
+                                            <p class="text-sm text-gray-500">Toutes les activités du groupe, triées par ordre chronologique.</p>
+                                        </div>
+                                        <div class="flex items-center gap-2">
+                                            <button onClick={markAllNotificationsRead} class="py-2 px-3 text-xs font-bold rounded-full bg-slate-100 text-slate-700 hover:bg-slate-200 transition">Marquer tout lu</button>
+                                            <button onClick={clearNotifications} class="py-2 px-3 text-xs font-bold rounded-full bg-pink-500 text-white hover:bg-pink-400 transition">Tout effacer</button>
+                                        </div>
+                                    </div>
+                                    {notifications.length === 0 ? (
+                                        <div class="rounded-3xl border border-dashed border-gray-200 p-6 text-center text-sm text-gray-400">
+                                            Aucune notification pour l’instant. Les nouvelles activités apparaîtront ici.
+                                        </div>
+                                    ) : (
+                                        <div class="space-y-3">
+                                            {notifications.map(notif => (
+                                                <button
+                                                    key={notif.id}
+                                                    onClick={() => markNotificationRead(notif.id)}
+                                                    className={`w-full text-left rounded-3xl p-4 border ${notif.read ? 'border-gray-200 bg-slate-50' : 'border-pink-200 bg-pink-50'} hover:bg-pink-100 transition`}
+                                                >
+                                                    <div class="flex items-start gap-3">
+                                                        <div class="text-2xl leading-none">{getNotificationIcon(notif.type)}</div>
+                                                        <div class="flex-1">
+                                                            <div class="flex items-center justify-between gap-3">
+                                                                <p class="font-bold text-sm text-gray-800">{notif.title}</p>
+                                                                <span class="text-[11px] text-gray-500">{formatRelativeTime(notif.created_at)}</span>
+                                                            </div>
+                                                            <p class="text-sm text-gray-500 mt-1">{notif.description}</p>
+                                                            {!notif.read && <span class="inline-flex mt-3 items-center rounded-full bg-pink-500/10 text-pink-600 text-[11px] font-bold px-2 py-1">Non lu</span>}
+                                                        </div>
+                                                    </div>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
                         {activeTab === "groups" && (
                             <div class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
                                 <div class="text-center mb-4">
@@ -1256,6 +1553,18 @@
                                     <div class="flex flex-col gap-2">
                                         <button onClick={() => setShowStatsModal(true)} class="w-full py-3 bg-blue-50 text-blue-600 rounded-xl font-bold text-xs hover:bg-blue-100 transition">📊 Statistiques</button>
                                         <button onClick={() => setShowEditProfileModal(true)} class="w-full py-3 bg-pink-50 text-pink-600 rounded-xl font-bold text-xs hover:bg-pink-100 transition">Modifier mon profil</button>
+                                    </div>
+                                    <div class="bg-slate-50 rounded-3xl p-4 border border-gray-100 mt-4">
+                                        <div class="flex items-center justify-between gap-3">
+                                            <div>
+                                                <p class="text-sm font-bold text-gray-800">Notifications</p>
+                                                <p class="text-xs text-gray-500">Active les notifications locales et reste informé.</p>
+                                            </div>
+                                            <button onClick={togglePushEnabled} className={`py-2 px-3 rounded-full text-xs font-bold transition ${pushEnabled ? 'bg-pink-500 text-white' : 'bg-white border border-gray-200 text-slate-700 hover:bg-slate-100'}`}>
+                                                {pushEnabled ? 'Actif' : 'Désactivé'}
+                                            </button>
+                                        </div>
+                                        <p class="mt-3 text-[11px] text-gray-400">Les notifications s’affichent dans le centre et peuvent également apparaître via le navigateur lorsque le toggle est activé.</p>
                                     </div>
                                     {currentGroup && (
                                         <button onClick={() => setShowConfirmLeave(true)} class="w-full py-3 bg-red-50 text-red-500 rounded-xl font-bold text-xs hover:bg-red-100 transition">Quitter le groupe</button>
